@@ -248,6 +248,51 @@
     #hud-bot-bar .btn { padding: 6px 14px; font-size: 0.78rem; letter-spacing: 0; }
     #hud-bot-count { font-size: 0.78rem; color: #ff9922; font-family: 'Courier New', monospace; }
 
+    /* ── Mobile action buttons ── */
+    .mobile-action-btn {
+      display: none; /* hidden on desktop */
+      position: absolute;
+      pointer-events: auto;
+      border: none;
+      border-radius: 50%;
+      font-family: inherit;
+      font-weight: 900;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: manipulation;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    #btn-shoot {
+      width: 72px; height: 72px;
+      right: 20px; bottom: 20px;
+      background: rgba(200, 40, 40, 0.75);
+      border: 2px solid rgba(255, 80, 80, 0.6);
+      color: #fff;
+      font-size: 1.6rem;
+      box-shadow: 0 0 16px rgba(200,30,30,0.5);
+    }
+    #btn-shoot:active { background: rgba(255, 60, 60, 0.9); transform: scale(0.93); }
+
+    #btn-interact {
+      width: 64px; height: 64px;
+      right: 104px; bottom: 20px;
+      background: rgba(40, 120, 200, 0.75);
+      border: 2px solid rgba(80, 160, 255, 0.6);
+      color: #fff;
+      font-size: 0.72rem;
+      letter-spacing: 0.5px;
+      box-shadow: 0 0 14px rgba(30,80,200,0.5);
+    }
+    #btn-interact:active { background: rgba(60, 140, 255, 0.9); transform: scale(0.93); }
+
+    @media (pointer: coarse) {
+      /* Show mobile buttons on touch devices */
+      #btn-shoot { display: flex; align-items: center; justify-content: center; }
+      #btn-interact.show { display: flex; align-items: center; justify-content: center; }
+    }
+
     /* ── Controls hint ── */
     #controls-hint {
       font-size: 0.75rem;
@@ -339,7 +384,7 @@
 
   <p id="controls-hint">
     桌面：WASD 移動 · 滑鼠瞄準 · 左鍵射擊 · E 開門<br>
-    手機：左搖桿移動 · 右搖桿瞄準 · 鬆開右搖桿射擊
+    手機：左搖桿移動（偏移越大越快）· 右搖桿瞄準 · 🔫 射擊按鈕 · 互動按鈕開門
   </p>
 </div>
 
@@ -359,6 +404,9 @@
     <button class="btn btn-secondary" id="btn-add-bot">🤖 加入 Bot</button>
     <span id="hud-bot-count">0 / 4</span>
   </div>
+  <!-- Mobile action buttons -->
+  <button class="mobile-action-btn" id="btn-shoot">🔫</button>
+  <button class="mobile-action-btn" id="btn-interact"></button>
 </div>
 
 <!-- Install banner -->

@@ -3,7 +3,7 @@
  * Multiplayer tactical shooter built with pixi.js v7 + PeerJS
  *
  * Controls (desktop):  WASD move · mouse aim · left-click shoot · E interact door
- * Controls (mobile):   left joystick move · right joystick aim · release to shoot
+ * Controls (mobile):   left joystick move · right joystick aim · shoot button · interact button
  */
 (function () {
   'use strict';
@@ -44,6 +44,10 @@
   const IND_TTL   = 2.5;           // shot-indicator time-to-live (s)
   const RESPAWN_S = 3.5;           // respawn delay (s)
   const MAX_HP    = 100;
+
+  // ── Joystick constants ────────────────────────────────────────────────
+  const JOY_DEAD_ZONE = 8;         // minimum joystick offset to register input (px)
+  const JOY_MAX_R     = 60;        // joystick offset for full-speed movement (px)
 
   // ── Bot constants ─────────────────────────────────────────────────────
   const BOT_SPD       = 110;       // bot movement speed (px/s)
@@ -316,6 +320,8 @@
       this.domRespawn   = document.getElementById('hud-respawn-msg');
       this.domDoorPrmpt = document.getElementById('hud-door-prompt');
       this.domRoomCode  = document.getElementById('hud-room-code');
+      this.domBtnShoot  = document.getElementById('btn-shoot');
+      this.domBtnInteract = document.getElementById('btn-interact');
 
       this._init();
     }
@@ -457,6 +463,12 @@
       window.addEventListener('touchmove',  e => this._onTouchMove(e),  { passive: false });
       window.addEventListener('touchend',   e => this._onTouchEnd(e),   { passive: false });
       window.addEventListener('touchcancel',e => this._onTouchEnd(e),   { passive: false });
+
+      // Mobile action buttons
+      this.domBtnShoot.addEventListener('touchstart', e => { e.preventDefault(); if (this.running) this._shoot(); }, { passive: false });
+      this.domBtnShoot.addEventListener('click', () => { if (this.running) this._shoot(); });
+      this.domBtnInteract.addEventListener('touchstart', e => { e.preventDefault(); if (this.running) this._interactDoor(); }, { passive: false });
+      this.domBtnInteract.addEventListener('click', () => { if (this.running) this._interactDoor(); });
     }
 
     _onTouchStart(e) {
@@ -495,7 +507,7 @@
           if (this.running) {
             const me = this.players.get(this.myId);
             const len = Math.hypot(this.jR.dx, this.jR.dy);
-            if (me && len > 8) me.angle = Math.atan2(this.jR.dy, this.jR.dx);
+            if (me && len > JOY_DEAD_ZONE) me.angle = Math.atan2(this.jR.dy, this.jR.dx);
           }
         }
       }
@@ -510,11 +522,6 @@
           this.jL = { on: false, ox: 0, oy: 0, dx: 0, dy: 0, id: null };
         }
         if (this.jR.on && t.identifier === this.jR.id) {
-          // Shoot on release if dragged far enough
-          const len = Math.hypot(this.jR.dx, this.jR.dy);
-          if (this.running && len > 15) this._shoot();
-          // Tap (small movement) also shoots
-          if (this.running && len < 10) this._shoot();
           this.jR = { on: false, ox: 0, oy: 0, dx: 0, dy: 0, id: null, shotPending: false };
         }
       }
@@ -878,19 +885,25 @@
       if (this.keys['w'] || this.keys['arrowup'])    vy -= 1;
       if (this.keys['s'] || this.keys['arrowdown'])  vy += 1;
 
-      // Left joystick overrides keyboard axes
+      // Left joystick overrides keyboard axes with speed gradient
+      let speedScale = 1;
       if (this.jL.on) {
         const len = Math.hypot(this.jL.dx, this.jL.dy);
-        if (len > 8) {
-          vx = this.jL.dx / Math.max(len, 60);
-          vy = this.jL.dy / Math.max(len, 60);
+        if (len > JOY_DEAD_ZONE) {
+          speedScale = Math.min(len, JOY_MAX_R) / JOY_MAX_R; // 0→1 based on offset
+          vx = this.jL.dx / len;
+          vy = this.jL.dy / len;
+        } else {
+          vx = 0; vy = 0;
         }
       }
 
       if (vx !== 0 || vy !== 0) {
-        const len = Math.hypot(vx, vy) || 1;
-        vx /= len; vy /= len;
-        this._movePlayer(me, vx * P_SPD * dt, vy * P_SPD * dt);
+        if (!this.jL.on) {
+          const len = Math.hypot(vx, vy) || 1;
+          vx /= len; vy /= len;
+        }
+        this._movePlayer(me, vx * speedScale * P_SPD * dt, vy * speedScale * P_SPD * dt);
       }
     }
 
@@ -1372,11 +1385,16 @@
         const dy = d.y * TS + TS / 2 - me.y;
         if (dx * dx + dy * dy < DOOR_D * DOOR_D) { doorNearby = d; break; }
       }
+      const isMobile = 'ontouchstart' in window;
       if (doorNearby && !me.dead) {
-        this.domDoorPrmpt.textContent = doorNearby.open ? '[E] 關門' : '[E] 開門';
+        const actionLabel = doorNearby.open ? '關門' : '開門';
+        this.domDoorPrmpt.textContent = isMobile ? actionLabel : `[E] ${actionLabel}`;
         this.domDoorPrmpt.classList.add('show');
+        this.domBtnInteract.textContent = actionLabel;
+        this.domBtnInteract.classList.add('show');
       } else {
         this.domDoorPrmpt.classList.remove('show');
+        this.domBtnInteract.classList.remove('show');
       }
 
       // Dead overlay (DOM)
