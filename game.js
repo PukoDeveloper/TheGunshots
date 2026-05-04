@@ -624,7 +624,7 @@
               seed: this.map.seed,
               spawnIdx,
               players: [...this.players.entries()].map(([id, p]) => ({
-                id, x: p.x, y: p.y, angle: p.angle, hp: p.hp,
+                id, x: p.x, y: p.y, angle: p.angle, hp: p.hp, isBot: p.isBot || false,
               })),
             });
             // Tell existing players about the newcomer
@@ -639,7 +639,11 @@
           this.players.set(this.myId, mkPlayer(this.myId, sp.x, sp.y));
           // Add existing players
           for (const pd of msg.players) {
-            if (pd.id !== this.myId) this.players.set(pd.id, mkPlayer(pd.id, pd.x, pd.y));
+            if (pd.id !== this.myId) {
+              const existing = mkPlayer(pd.id, pd.x, pd.y);
+              if (pd.isBot) existing.isBot = true;
+              this.players.set(pd.id, existing);
+            }
           }
           this._startGame();
           break;
