@@ -847,7 +847,7 @@
         const perp  = Math.abs(dx * sin - dy * cos); // perpendicular distance
         if (proj > 0 && proj <= ray.dist + P_RAD && perp <= P_RAD * 1.4) {
           // Hit!
-          const dmg = 100;
+          const dmg = MAX_HP;
           this._broadcast({ type: 'hit', target: id, dmg });
           break;
         }
