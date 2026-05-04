@@ -410,6 +410,8 @@
     }
 
     _onTouchStart(e) {
+      // Don't intercept touches on buttons/inputs so click handlers still fire
+      if (e.target.closest('button, input, a')) return;
       e.preventDefault();
       for (const t of e.changedTouches) {
         const half = window.innerWidth / 2;
