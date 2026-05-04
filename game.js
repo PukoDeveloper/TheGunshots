@@ -8,6 +8,21 @@
 (function () {
   'use strict';
 
+  // ── Lock viewport dimensions so mobile nav-bar changes never reflow the layout ──
+  (function lockAppDimensions() {
+    const setDims = () => {
+      document.documentElement.style.setProperty('--app-h', window.innerHeight + 'px');
+      document.documentElement.style.setProperty('--app-w', window.innerWidth + 'px');
+    };
+    setDims();
+    // Only update on real orientation changes, not on nav-bar show/hide
+    if (screen.orientation) {
+      screen.orientation.addEventListener('change', () => setTimeout(setDims, 300));
+    } else {
+      window.addEventListener('orientationchange', () => setTimeout(setDims, 300));
+    }
+  })();
+
   // ─────────────────────────────────────────────────────────────────────────
   // CONSTANTS
   // ─────────────────────────────────────────────────────────────────────────
@@ -57,6 +72,10 @@
 
   // Selector for interactive UI elements that should not have touch events intercepted
   const INTERACTIVE_SELECTOR = 'button, input, a';
+
+  // Maximum pixel height change that can be attributed to a mobile nav-bar appearing
+  // (genuine resizes such as orientation changes are larger)
+  const MAX_NAVBAR_HEIGHT_CHANGE = 200;
 
   // ─────────────────────────────────────────────────────────────────────────
   // UTILITIES
@@ -315,8 +334,14 @@
 
     // ── PIXI setup ─────────────────────────────────────────────────────────
     _initPixi() {
+      // Use locked dimensions (same values as CSS --app-h/--app-w) so the canvas
+      // never resizes due to mobile nav-bar or status-bar changes.
+      let _appW = window.innerWidth;
+      let _appH = window.innerHeight;
+
       const app = new PIXI.Application({
-        resizeTo: window,
+        width: _appW,
+        height: _appH,
         backgroundColor: 0x000000,
         resolution: Math.min(window.devicePixelRatio || 1, 2),
         autoDensity: true,
@@ -326,6 +351,29 @@
       const wrap = document.getElementById('canvas-wrap');
       wrap.appendChild(app.view);
       this.app = app;
+
+      // Resize only on real orientation / window changes – NOT on nav-bar show/hide.
+      // A nav-bar change is a small height-only decrease (<= 200 px); anything else
+      // (width change, height increase, or large height decrease) is a genuine resize.
+      const onResize = () => {
+        const nw = window.innerWidth;
+        const nh = window.innerHeight;
+        const heightDecreased = nh < _appH;
+        const smallDecrease   = (_appH - nh) <= MAX_NAVBAR_HEIGHT_CHANGE;
+        if (nw === _appW && heightDecreased && smallDecrease) return; // nav-bar – ignore
+        _appW = nw;
+        _appH = nh;
+        app.renderer.resize(_appW, _appH);
+        this._rebuildDarkRT();
+      };
+
+      if (screen.orientation) {
+        screen.orientation.addEventListener('change', () => setTimeout(onResize, 300));
+      } else {
+        window.addEventListener('orientationchange', () => setTimeout(onResize, 300));
+      }
+      // Also handle desktop browser resizes
+      window.addEventListener('resize', onResize);
 
       // World container (camera scroll)
       this.world = new PIXI.Container();
@@ -361,7 +409,6 @@
       app.stage.addChild(this.hudGfx);
       app.stage.addChild(this.joyGfx);
 
-      app.renderer.on('resize', () => this._rebuildDarkRT());
       app.ticker.add(delta => this._tick(delta * (1 / 60)));
     }
 
@@ -427,6 +474,7 @@
     }
 
     _onTouchMove(e) {
+      if (e.target.closest(INTERACTIVE_SELECTOR)) return;
       e.preventDefault();
       for (const t of e.changedTouches) {
         if (this.jL.on && t.identifier === this.jL.id) {
@@ -454,6 +502,8 @@
     }
 
     _onTouchEnd(e) {
+      // Don't intercept touches on buttons/inputs so click handlers still fire
+      if (e.target.closest(INTERACTIVE_SELECTOR)) return;
       e.preventDefault();
       for (const t of e.changedTouches) {
         if (this.jL.on && t.identifier === this.jL.id) {
