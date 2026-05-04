@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#111111"/>
+  <!-- Muzzle flash -->
+  <polygon points="420,230 460,256 420,282 400,256" fill="#FFD700"/>
+  <!-- Gun body -->
+  <rect x="180" y="238" width="220" height="36" rx="8" fill="#888888"/>
+  <!-- Grip -->
+  <rect x="220" y="274" width="40" height="60" rx="6" fill="#666666"/>
+  <!-- Trigger guard -->
+  <path d="M230,274 Q250,310 270,274" fill="none" stroke="#777" stroke-width="8"/>
+  <!-- Barrel -->
+  <rect x="360" y="244" width="60" height="24" rx="4" fill="#aaaaaa"/>
+  <!-- Sight -->
+  <rect x="260" y="230" width="10" height="12" rx="2" fill="#cccccc"/>
+  <!-- Bullets / sparks -->
+  <circle cx="100" cy="160" r="10" fill="#FFD700" opacity="0.8"/>
+  <circle cx="130" cy="320" r="7"  fill="#FF8C00" opacity="0.6"/>
+  <circle cx="70"  cy="280" r="5"  fill="#FFD700" opacity="0.5"/>
+  <!-- Title text -->
+  <text x="256" y="450" font-family="Arial Black, sans-serif" font-size="52"
+        font-weight="900" fill="#FF4444" text-anchor="middle" letter-spacing="2">
+    GUNSHOTS
+  </text>
+</svg>

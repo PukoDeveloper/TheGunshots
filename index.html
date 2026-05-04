@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#111111">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="Gunshots">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <title>TheGunshots</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      width: 100%; height: 100%;
+      background: #111;
+      color: #eee;
+      font-family: 'Arial Black', 'Arial', sans-serif;
+      overflow: hidden;
+      user-select: none;
+      -webkit-user-select: none;
+      touch-action: none;
+    }
+
+    /* ── Canvas ── */
+    #canvas-wrap {
+      position: fixed; inset: 0;
+      display: none;
+    }
+    #canvas-wrap canvas {
+      display: block;
+      width: 100% !important;
+      height: 100% !important;
+    }
+
+    /* ── Lobby ── */
+    #lobby {
+      position: fixed; inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0a 100%);
+      gap: 18px;
+      z-index: 10;
+    }
+
+    #lobby h1 {
+      font-size: clamp(2rem, 8vw, 4rem);
+      color: #ff4444;
+      text-shadow: 0 0 30px #ff2222, 0 2px 4px #000;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+    }
+
+    #lobby .subtitle {
+      font-size: clamp(0.75rem, 2.5vw, 1rem);
+      color: #888;
+      letter-spacing: 2px;
+    }
+
+    .lobby-card {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px;
+      padding: 24px 32px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      width: min(400px, 90vw);
+    }
+
+    .lobby-card h2 {
+      font-size: 1rem;
+      color: #aaa;
+      text-align: center;
+      letter-spacing: 2px;
+    }
+
+    .btn {
+      padding: 12px 28px;
+      border-radius: 8px;
+      border: none;
+      font-family: inherit;
+      font-size: 1rem;
+      font-weight: 900;
+      letter-spacing: 1px;
+      cursor: pointer;
+      transition: transform .1s, box-shadow .1s;
+      text-transform: uppercase;
+    }
+    .btn:active { transform: scale(0.96); }
+
+    .btn-primary {
+      background: #cc2222;
+      color: #fff;
+      box-shadow: 0 4px 20px rgba(200,30,30,0.4);
+    }
+    .btn-primary:hover { background: #ee3333; }
+
+    .btn-secondary {
+      background: #223366;
+      color: #aaddff;
+      box-shadow: 0 4px 20px rgba(30,80,200,0.3);
+    }
+    .btn-secondary:hover { background: #2a4080; }
+
+    .input-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    input[type=text] {
+      flex: 1;
+      padding: 10px 14px;
+      border-radius: 8px;
+      border: 1px solid #444;
+      background: #1a1a1a;
+      color: #eee;
+      font-family: 'Courier New', monospace;
+      font-size: 1.1rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      outline: none;
+    }
+    input[type=text]:focus { border-color: #4488ff; }
+
+    #status-msg {
+      font-size: 0.85rem;
+      color: #ffaa44;
+      text-align: center;
+      min-height: 20px;
+    }
+
+    #room-code-box {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+    #room-code-box .label { font-size: 0.8rem; color: #888; letter-spacing: 1px; }
+    #room-code-box .code {
+      font-family: 'Courier New', monospace;
+      font-size: clamp(1.4rem, 5vw, 2rem);
+      color: #44ff88;
+      letter-spacing: 6px;
+      background: #0a1a0a;
+      padding: 10px 20px;
+      border-radius: 8px;
+      border: 1px solid #44ff88;
+      cursor: pointer;
+    }
+    #room-code-box .hint { font-size: 0.75rem; color: #555; }
+
+    /* ── Install prompt ── */
+    #install-banner {
+      display: none;
+      position: fixed;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(20,20,40,0.95);
+      border: 1px solid #4488ff;
+      border-radius: 12px;
+      padding: 12px 20px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      z-index: 100;
+      box-shadow: 0 4px 24px rgba(0,0,80,0.5);
+      max-width: 90vw;
+    }
+    #install-banner span { font-size: 0.9rem; color: #cce; }
+    #install-banner .btn { padding: 8px 18px; font-size: 0.85rem; }
+    #install-close { background: none; border: none; color: #888; font-size: 1.2rem; cursor: pointer; }
+
+    /* ── In-game overlay ── */
+    #hud-overlay {
+      position: fixed; inset: 0;
+      pointer-events: none;
+      z-index: 5;
+      display: none;
+    }
+
+    #hud-dead {
+      display: none;
+      position: absolute;
+      inset: 0;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 10px;
+    }
+    #hud-dead.show { display: flex; }
+    #hud-dead h2 { font-size: clamp(2rem,6vw,3rem); color: #ff4444; text-shadow: 0 0 20px #ff0000; }
+    #hud-dead p  { font-size: 1rem; color: #888; }
+
+    #hud-door-prompt {
+      display: none;
+      position: absolute;
+      left: 50%; bottom: 52px;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.72);
+      border: 1px solid #555;
+      border-radius: 8px;
+      padding: 6px 18px;
+      font-size: 0.9rem;
+      color: #cccccc;
+      letter-spacing: 1px;
+    }
+    #hud-door-prompt.show { display: block; }
+
+    #hud-room-code {
+      display: none;
+      position: absolute;
+      top: 12px; right: 14px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.8rem;
+      color: #444;
+      letter-spacing: 2px;
+    }
+    #hud-room-code.show { display: block; }
+
+    /* ── Controls hint ── */
+    #controls-hint {
+      font-size: 0.75rem;
+      color: #555;
+      text-align: center;
+      line-height: 1.6;
+    }
+
+    /* ── Loading ── */
+    #loading {
+      position: fixed; inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: #111;
+      font-size: 1.2rem;
+      color: #888;
+      z-index: 20;
+    }
+
+    /* ── Orientation notice ── */
+    #orient-notice {
+      display: none;
+      position: fixed; inset: 0;
+      background: #111;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 16px;
+      z-index: 50;
+      font-size: 1.1rem;
+      color: #aaa;
+      text-align: center;
+    }
+    #orient-notice svg { width: 60px; fill: #555; animation: rotate90 1.5s ease-in-out infinite alternate; }
+    @keyframes rotate90 {
+      from { transform: rotate(0deg); }
+      to   { transform: rotate(90deg); }
+    }
+
+    @media (orientation: portrait) {
+      #orient-notice { display: flex; }
+    }
+    @media (orientation: landscape) {
+      #orient-notice { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- Orientation notice (portrait only) -->
+<div id="orient-notice">
+  <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <path d="M16.48 2.52c3.27 1.55 5.61 4.72 5.97 8.48H24C23.44 4.84 20.29 1.22 16 .08L16.48 2.52zM7.52 2.52L8 .08C3.71 1.22.56 4.84 0 11h1.55c.36-3.76 2.7-6.93 5.97-8.48zM16 .08l-.48 2.44c.88.28 1.69.69 2.44 1.22l1.73-1.73A11.9 11.9 0 0016 .08zM12 4c-4.42 0-8 3.58-8 8s3.58 8 8 8 8-3.58 8-8-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6z"/>
+  </svg>
+  <p>請旋轉裝置至橫向模式</p>
+  <p style="font-size:0.8rem;color:#555">Rotate to landscape</p>
+</div>
+
+<!-- Loading screen -->
+<div id="loading">載入中…</div>
+
+<!-- Lobby -->
+<div id="lobby">
+  <h1>TheGunshots</h1>
+  <p class="subtitle">多人戰術射擊遊戲</p>
+
+  <div class="lobby-card">
+    <h2>建立房間</h2>
+    <button class="btn btn-primary" id="btn-create">🎮 建立遊戲</button>
+    <div id="room-code-box">
+      <span class="label">房間代碼（分享給朋友）</span>
+      <span class="code" id="code-display" title="點擊複製">——————</span>
+      <span class="hint">點擊代碼複製</span>
+    </div>
+  </div>
+
+  <div class="lobby-card">
+    <h2>加入房間</h2>
+    <div class="input-row">
+      <input type="text" id="join-input" maxlength="8" placeholder="輸入代碼" autocomplete="off" spellcheck="false"/>
+      <button class="btn btn-secondary" id="btn-join">加入</button>
+    </div>
+  </div>
+
+  <p id="status-msg"></p>
+
+  <p id="controls-hint">
+    桌面：WASD 移動 · 滑鼠瞄準 · 左鍵射擊 · E 開門<br>
+    手機：左搖桿移動 · 右搖桿瞄準 · 鬆開右搖桿射擊
+  </p>
+</div>
+
+<!-- Canvas container -->
+<div id="canvas-wrap"></div>
+
+<!-- HUD overlay (pointer-events:none) -->
+<div id="hud-overlay">
+  <div id="hud-dead">
+    <h2>💀 你死了</h2>
+    <p id="hud-respawn-msg">3.5 秒後重生…</p>
+  </div>
+  <div id="hud-door-prompt">[E] 開門</div>
+  <div id="hud-room-code"></div>
+</div>
+
+<!-- Install banner -->
+<div id="install-banner" style="display:none">
+  <span>📲 安裝 TheGunshots 到主畫面</span>
+  <button class="btn btn-primary" id="btn-install">安裝</button>
+  <button id="install-close">✕</button>
+</div>
+
+<!-- Dependencies (CDN) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.4.2/pixi.min.js"
+        crossorigin="anonymous"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"
+        crossorigin="anonymous"></script>
+
+<!-- Game -->
+<script src="game.js"></script>
+</body>
+</html>
