@@ -55,6 +55,9 @@
     HP_LOW:   0xee4422,
   };
 
+  // Selector for interactive UI elements that should not have touch events intercepted
+  const INTERACTIVE_SELECTOR = 'button, input, a';
+
   // ─────────────────────────────────────────────────────────────────────────
   // UTILITIES
   // ─────────────────────────────────────────────────────────────────────────
@@ -411,7 +414,7 @@
 
     _onTouchStart(e) {
       // Don't intercept touches on buttons/inputs so click handlers still fire
-      if (e.target.closest('button, input, a')) return;
+      if (e.target.closest(INTERACTIVE_SELECTOR)) return;
       e.preventDefault();
       for (const t of e.changedTouches) {
         const half = window.innerWidth / 2;
