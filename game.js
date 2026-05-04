@@ -30,6 +30,13 @@
   const RESPAWN_S = 3.5;           // respawn delay (s)
   const MAX_HP    = 100;
 
+  // ── Bot constants ─────────────────────────────────────────────────────
+  const BOT_SPD       = 110;       // bot movement speed (px/s)
+  const BOT_SHOOT_CD  = 1.8;       // seconds between bot shots
+  const BOT_SIGHT     = 280;       // bot detection radius (px)
+  const BOT_AIM_TOL   = Math.PI / 5; // ±36° aim tolerance before bot shoots
+  const MAX_BOTS      = 4;         // max bots per room
+
   const C = {
     FLOOR:    0x252525,
     FLOOR_LN: 0x2d2d2d,
@@ -39,6 +46,7 @@
     DOOR_OP:  0x3c1e08,
     SELF:     0x44ff88,
     ENEMY:    0xff5533,
+    BOT:      0xff9922,   // orange – distinct from human enemy (red)
     DEAD_P:   0x555555,
     BULLET:   0xFFFF55,
     IND:      0xff2222,
@@ -67,6 +75,12 @@
   function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
   function randomSeed() { return (Math.random() * 0xFFFFFF | 0) + 1; }
+
+  function normalizeAngle(a) {
+    while (a >  Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    return a;
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // MAP GENERATION
@@ -246,6 +260,10 @@
       this.shotInds = [];          // {wx,wy,angle,ttl}  shot indicators (world-space origin)
       this.running  = false;
       this.syncTimer = 0;
+
+      // ── Bot state ──────────────────────────────────────────────────────
+      this.botCount = 0;
+      this.botRng   = mkRng(Date.now());
 
       // ── Input ──────────────────────────────────────────────────────────
       this.keys = {};
@@ -529,6 +547,14 @@
           setTimeout(() => { codeDisp.textContent = code; }, 1200);
         });
       });
+
+      // "加入 Bot" button in HUD – only used by host
+      this.domBotBar      = document.getElementById('hud-bot-bar');
+      this.domBotCount    = document.getElementById('hud-bot-count');
+      document.getElementById('btn-add-bot').addEventListener('click', () => {
+        if (!this.running || !this.isHost) return;
+        this._addBot();
+      });
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -622,7 +648,9 @@
           if (!this.players.has(msg.id)) {
             const spIdx = this.players.size % this.map.spawns.length;
             const s = this.map.spawns[spIdx];
-            this.players.set(msg.id, mkPlayer(msg.id, s.x, s.y));
+            const joined = mkPlayer(msg.id, s.x, s.y);
+            if (msg.id.startsWith('bot-')) joined.isBot = true;
+            this.players.set(msg.id, joined);
           }
           break;
 
@@ -632,6 +660,7 @@
             if (!p) { p = mkPlayer(msg.id, msg.x, msg.y); this.players.set(msg.id, p); }
             p.x = msg.x; p.y = msg.y; p.angle = msg.angle; p.hp = msg.hp;
             p.dead = msg.dead;
+            if (msg.isBot) p.isBot = true;
           }
           break;
 
@@ -688,12 +717,26 @@
       this.domRoomCode.textContent = '房間: ' + code;
       this.domRoomCode.classList.add('show');
 
+      // Show bot bar only for host
+      if (this.isHost) {
+        this.domBotBar.classList.add('show');
+        this._updateBotCountDisplay();
+      }
+
       // Hide lobby, show canvas + HUD
       document.getElementById('lobby').style.display = 'none';
       document.getElementById('canvas-wrap').style.display = 'block';
       this.domHud.style.display = 'block';
 
       this.running = true;
+    }
+
+    _updateBotCountDisplay() {
+      if (this.domBotCount) {
+        this.domBotCount.textContent = this.botCount + ' / ' + MAX_BOTS;
+      }
+      const addBtn = document.getElementById('btn-add-bot');
+      if (addBtn) addBtn.disabled = this.botCount >= MAX_BOTS;
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -751,6 +794,7 @@
       if (!me) return;
 
       this._updateMovement(dt, me);
+      this._updateBots(dt);
       this._updateBullets(dt);
       this._updateIndicators(dt);
       this._updateCamera(me);
@@ -846,15 +890,39 @@
         const proj  = dx * cos + dy * sin;        // along ray
         const perp  = Math.abs(dx * sin - dy * cos); // perpendicular distance
         if (proj > 0 && proj <= ray.dist + P_RAD && perp <= P_RAD * 1.4) {
-          // Hit!
           const dmg = MAX_HP;
-          this._broadcast({ type: 'hit', target: id, dmg });
+          if (p.isBot) {
+            // Apply bot damage locally (bots have no PeerJS connection)
+            this._applyBotDamage(id, dmg);
+          } else {
+            this._broadcast({ type: 'hit', target: id, dmg });
+          }
           break;
         }
       }
 
       // Broadcast shot event
       this._broadcast({ type: 'shot', id: this.myId, x: me.x, y: me.y, angle: me.angle });
+    }
+
+    _applyBotDamage(botId, dmg) {
+      const bot = this.players.get(botId);
+      if (!bot || bot.dead) return;
+      bot.hp = Math.max(0, bot.hp - dmg);
+      if (bot.hp <= 0) {
+        bot.dead = true;
+        // Respawn bot after delay
+        setTimeout(() => {
+          if (!this.players.has(botId)) return;
+          const spIdx = this.botCount % this.map.spawns.length;
+          const sp = this.map.spawns[spIdx];
+          bot.x = sp.x; bot.y = sp.y;
+          bot.hp = MAX_HP;
+          bot.dead = false;
+          bot.botState = 'wander';
+          bot.botTarget = null;
+        }, RESPAWN_S * 1000);
+      }
     }
 
     _spawnBullet(ox, oy, angle, local) {
@@ -925,6 +993,133 @@
       this.shotInds = this.shotInds.filter(s => s.ttl > 0);
     }
 
+    // ── Bot: Add ───────────────────────────────────────────────────────────
+    _addBot() {
+      if (this.botCount >= MAX_BOTS) return;
+      const botId   = 'bot-' + this.botCount;
+      this.botCount += 1;
+      const spIdx   = (this.players.size) % this.map.spawns.length;
+      const sp      = this.map.spawns[spIdx];
+      const bot     = mkPlayer(botId, sp.x, sp.y);
+      bot.isBot        = true;
+      bot.botState     = 'wander';     // 'wander' | 'chase'
+      bot.botTarget    = null;         // {x, y} movement target
+      bot.botTimer     = 0;            // time until next wander-target pick
+      bot.botShootTimer = BOT_SHOOT_CD * this.botRng(); // stagger initial shot
+      this.players.set(botId, bot);
+      // Tell all connected peers about this new bot
+      this._broadcast({ type: 'playerJoin', id: botId });
+      this._updateBotCountDisplay();
+    }
+
+    // ── Bot: Update (host only) ────────────────────────────────────────────
+    _updateBots(dt) {
+      if (!this.isHost) return;
+
+      for (const [id, bot] of this.players) {
+        if (!bot.isBot || bot.dead) continue;
+
+        // ── 1. Find nearest living human player ──────────────────────────
+        let nearestDist = Infinity, nearestTarget = null;
+        for (const [pid, p] of this.players) {
+          if (p.isBot || p.dead) continue;
+          const d2 = dist2(bot.x, bot.y, p.x, p.y);
+          if (d2 < nearestDist) { nearestDist = d2; nearestTarget = p; }
+        }
+
+        // ── 2. State transitions ──────────────────────────────────────────
+        bot.botTimer -= dt;
+        if (nearestTarget && nearestDist < BOT_SIGHT * BOT_SIGHT) {
+          bot.botState  = 'chase';
+          bot.botTarget = { x: nearestTarget.x, y: nearestTarget.y };
+        } else if (bot.botTimer <= 0) {
+          bot.botState  = 'wander';
+          bot.botTarget = this._randomFloorPoint();
+          bot.botTimer  = 2 + this.botRng() * 3;
+        }
+
+        // ── 3. Movement ───────────────────────────────────────────────────
+        if (bot.botTarget) {
+          const tdx = bot.botTarget.x - bot.x;
+          const tdy = bot.botTarget.y - bot.y;
+          const d   = Math.hypot(tdx, tdy);
+          if (d > 6) {
+            bot.angle = Math.atan2(tdy, tdx);
+            this._movePlayer(bot, (tdx / d) * BOT_SPD * dt, (tdy / d) * BOT_SPD * dt);
+          } else if (bot.botState === 'wander') {
+            bot.botTarget = null;
+          }
+        }
+
+        // ── 4. Shooting ───────────────────────────────────────────────────
+        bot.botShootTimer -= dt;
+        if (nearestTarget && bot.botShootTimer <= 0 &&
+            nearestDist < BOT_SIGHT * BOT_SIGHT) {
+          const angleToPlayer = Math.atan2(
+            nearestTarget.y - bot.y, nearestTarget.x - bot.x
+          );
+          // Snap aim toward player (with slight imprecision)
+          const spread = (this.botRng() - 0.5) * 0.35;
+          bot.angle = angleToPlayer + spread;
+
+          const angleDiff = Math.abs(normalizeAngle(bot.angle - angleToPlayer));
+          if (angleDiff < BOT_AIM_TOL) {
+            this._botShoot(bot);
+            bot.botShootTimer = BOT_SHOOT_CD + (this.botRng() - 0.5) * 0.6;
+          }
+        }
+      }
+    }
+
+    _randomFloorPoint() {
+      const { tiles } = this.map;
+      // Try up to 40 times to find a random floor tile
+      for (let i = 0; i < 40; i++) {
+        const tx = 1 + Math.floor(this.botRng() * (MW - 2));
+        const ty = 1 + Math.floor(this.botRng() * (MH - 2));
+        if (tiles[ty][tx] === T.FLOOR) {
+          return { x: (tx + 0.5) * TS, y: (ty + 0.5) * TS };
+        }
+      }
+      // Fallback to a spawn point
+      return { ...this.map.spawns[0] };
+    }
+
+    _botShoot(bot) {
+      playShot(false);
+      this._spawnBullet(bot.x, bot.y, bot.angle, false);
+
+      // Hit detection against human players
+      const ray = castRay(this.map, bot.x, bot.y, bot.angle);
+      for (const [pid, p] of this.players) {
+        if (p.isBot || p.dead) continue;
+        const dx  = p.x - bot.x, dy = p.y - bot.y;
+        const cos = Math.cos(bot.angle), sin = Math.sin(bot.angle);
+        const proj = dx * cos + dy * sin;
+        const perp = Math.abs(dx * sin - dy * cos);
+        if (proj > 0 && proj <= ray.dist + P_RAD && perp <= P_RAD * 1.4) {
+          if (pid === this.myId) {
+            // Apply to local player directly
+            const me = this.players.get(this.myId);
+            if (me && !me.dead) {
+              me.hp = Math.max(0, me.hp - MAX_HP);
+              if (me.hp <= 0) this._die();
+            }
+          } else {
+            // Apply to remote peer via message
+            this._sendTo(pid, { type: 'hit', target: pid, dmg: MAX_HP });
+          }
+          break;
+        }
+      }
+
+      // Broadcast shot indicator to all peers
+      this._broadcast({
+        type: 'shot', id: bot.id,
+        x: bot.x, y: bot.y, angle: bot.angle,
+      });
+    }
+
     // ── Camera ─────────────────────────────────────────────────────────────
     _updateCamera(me) {
       this.world.x = Math.round(this.app.screen.width  / 2 - me.x);
@@ -938,7 +1133,11 @@
 
       for (const [id, p] of this.players) {
         const isSelf = id === this.myId;
-        const col    = p.dead ? C.DEAD_P : (isSelf ? C.SELF : C.ENEMY);
+        let col;
+        if (p.dead)        col = C.DEAD_P;
+        else if (isSelf)   col = C.SELF;
+        else if (p.isBot)  col = C.BOT;
+        else               col = C.ENEMY;
 
         // Body circle
         g.beginFill(col, p.dead ? 0.4 : 1);
@@ -1186,6 +1385,21 @@
         hp: me.hp,
         dead: me.dead,
       });
+      // Host also syncs all bot states so peers can render them
+      if (this.isHost) {
+        for (const [bid, bot] of this.players) {
+          if (!bot.isBot) continue;
+          this._broadcast({
+            type: 'state',
+            id: bid,
+            x: bot.x, y: bot.y,
+            angle: bot.angle,
+            hp: bot.hp,
+            dead: bot.dead,
+            isBot: true,
+          });
+        }
+      }
     }
   }
 

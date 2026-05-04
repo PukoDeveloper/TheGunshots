@@ -184,6 +184,9 @@
       display: none;
     }
 
+    /* Allow pointer events on interactive HUD children */
+    #hud-bot-bar { pointer-events: auto; }
+
     #hud-dead {
       display: none;
       position: absolute;
@@ -222,6 +225,18 @@
       letter-spacing: 2px;
     }
     #hud-room-code.show { display: block; }
+
+    /* Bot bar (top-left, host only) */
+    #hud-bot-bar {
+      display: none;
+      position: absolute;
+      top: 10px; left: 12px;
+      align-items: center;
+      gap: 8px;
+    }
+    #hud-bot-bar.show { display: flex; }
+    #hud-bot-bar .btn { padding: 6px 14px; font-size: 0.78rem; letter-spacing: 0; }
+    #hud-bot-count { font-size: 0.78rem; color: #ff9922; font-family: 'Courier New', monospace; }
 
     /* ── Controls hint ── */
     #controls-hint {
@@ -327,6 +342,11 @@
   </div>
   <div id="hud-door-prompt">[E] 開門</div>
   <div id="hud-room-code"></div>
+  <!-- Bot bar: host only, top-left -->
+  <div id="hud-bot-bar">
+    <button class="btn btn-secondary" id="btn-add-bot">🤖 加入 Bot</button>
+    <span id="hud-bot-count">0 / 4</span>
+  </div>
 </div>
 
 <!-- Install banner -->
