@@ -1,5 +1,5 @@
 /* Service Worker for TheGunshots PWA */
-const CACHE_NAME = 'gunshots-v1';
+const CACHE_NAME = 'gunshots-v2';
 const ASSETS = [
   './',
   './index.html',
