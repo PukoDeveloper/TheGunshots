@@ -27,8 +27,15 @@
   // CONSTANTS
   // ─────────────────────────────────────────────────────────────────────────
   const TS = 40;          // tile size (px)
-  const MW = 34;          // map width  (tiles)
-  const MH = 22;          // map height (tiles)
+  let   MW = 34;          // map width  (tiles) – configurable via waiting room
+  let   MH = 22;          // map height (tiles) – configurable via waiting room
+
+  // Map size presets for the waiting room settings panel
+  const MAP_SIZES = {
+    small:  { w: 24, h: 16 },
+    medium: { w: 34, h: 22 },
+    large:  { w: 46, h: 30 },
+  };
 
   const T = { WALL: 0, FLOOR: 1, DOOR: 2 };
 
@@ -42,6 +49,11 @@
   const DOOR_D    = 54;            // max door-interaction distance (px)
   const SYNC_MS   = 80;            // state-sync interval (ms)
   const IND_TTL   = 2.5;           // shot-indicator time-to-live (s)
+  const SOUND_RANGE    = 380;      // max distance to hear footsteps / shots (px)
+  const SOUND_TTL      = 1.8;      // sound-arc indicator time-to-live (s)
+  const SOUND_ARC_R    = 88;       // radius of sound arc from screen centre (px)
+  const SOUND_ARC_HALF = Math.PI / 7; // ±~26° half-width of sound arc
+  const SOUND_TIP_OFFSET = 6;     // inward offset of the arc's direction dot (px)
   const RESPAWN_S = 3.5;           // respawn delay (s)
   const MAX_HP    = 100;
 
@@ -69,6 +81,7 @@
     DEAD_P:   0x555555,
     BULLET:   0xFFFF55,
     IND:      0xff2222,
+    SOUND_IND:0xffaa22,   // orange arc for footstep / nearby sound
     HP_BG:    0x2a2a2a,
     HP_FG:    0x44ee44,
     HP_LOW:   0xee4422,
@@ -238,6 +251,19 @@
     return pts;
   }
 
+  // Returns true if target is within the observer's FOV cone and has line-of-sight
+  function isInFov(map, obs, target) {
+    const dx = target.x - obs.x, dy = target.y - obs.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > FOV_DIST + P_RAD) return false;
+    const angleTo = Math.atan2(dy, dx);
+    const diff = Math.abs(normalizeAngle(angleTo - obs.angle));
+    if (diff > FOV_HALF) return false;
+    // Line-of-sight: ray must reach at least as far as the target's body edge
+    const ray = castRay(map, obs.x, obs.y, angleTo);
+    return ray.dist >= dist - P_RAD;
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // AUDIO  (Web Audio API – procedural)
   // ─────────────────────────────────────────────────────────────────────────
@@ -284,12 +310,18 @@
       this.players  = new Map();   // peerId → playerState
       this.bullets  = [];          // active bullet objects
       this.shotInds = [];          // {wx,wy,angle,ttl}  shot indicators (world-space origin)
+      this.soundInds = [];         // {wx,wy,ttl,type}   sound-arc indicators (world-space origin)
       this.running  = false;
       this.syncTimer = 0;
 
       // ── Bot state ──────────────────────────────────────────────────────
       this.botCount = 0;
       this.botRng   = mkRng(Date.now());
+
+      // ── Waiting room state ─────────────────────────────────────────────
+      this.roomSettings  = { mapSize: 'medium' };
+      this.waitingPeerIds = [];   // peer IDs of non-host players in waiting room
+      this.hostId        = null;  // PeerJS ID of the host
 
       // ── Input ──────────────────────────────────────────────────────────
       this.keys = {};
@@ -313,6 +345,7 @@
       this.indGfx   = null;
       this.hudGfx   = null;
       this.joyGfx   = null;
+      this.soundGfx = null;
 
       // ── DOM HUD refs ───────────────────────────────────────────────────
       this.domHud       = document.getElementById('hud-overlay');
@@ -407,13 +440,15 @@
       // Darkness sprite (covers full screen, screen-space)
       this._rebuildDarkRT();
 
-      // Shot indicators + HUD + joystick (screen-space)
-      this.indGfx = new PIXI.Graphics();
-      this.hudGfx = new PIXI.Graphics();
-      this.joyGfx = new PIXI.Graphics();
+      // Shot indicators + HUD + joystick + sound arcs (screen-space)
+      this.indGfx   = new PIXI.Graphics();
+      this.hudGfx   = new PIXI.Graphics();
+      this.joyGfx   = new PIXI.Graphics();
+      this.soundGfx = new PIXI.Graphics();
       app.stage.addChild(this.indGfx);
       app.stage.addChild(this.hudGfx);
       app.stage.addChild(this.joyGfx);
+      app.stage.addChild(this.soundGfx);
 
       app.ticker.add(delta => this._tick(delta * (1 / 60)));
     }
@@ -492,14 +527,6 @@
         if (this.jL.on && t.identifier === this.jL.id) {
           this.jL.dx = t.clientX - this.jL.ox;
           this.jL.dy = t.clientY - this.jL.oy;
-          if (this.running) {
-            // Update facing from movement direction when no right joystick
-            if (!this.jR.on) {
-              const me = this.players.get(this.myId);
-              const len = Math.hypot(this.jL.dx, this.jL.dy);
-              if (me && len > 5) me.angle = Math.atan2(this.jL.dy, this.jL.dx);
-            }
-          }
         }
         if (this.jR.on && t.identifier === this.jR.id) {
           this.jR.dx = t.clientX - this.jR.ox;
@@ -561,23 +588,15 @@
       const joinBtn   = document.getElementById('btn-join');
       const joinInput = document.getElementById('join-input');
       const statusEl  = document.getElementById('status-msg');
-      const codeBox   = document.getElementById('room-code-box');
-      const codeDisp  = document.getElementById('code-display');
 
       createBtn.addEventListener('click', () => {
         createBtn.disabled = true;
         statusEl.textContent = '正在建立房間…';
         this._initPeer(null, peerId => {
-          const code = peerId.slice(0, 8).toUpperCase();
-          codeBox.style.display    = 'flex';
-          codeDisp.textContent     = code;
-          statusEl.textContent     = '等待玩家加入…（或直接開始）';
           this.isHost = true;
-
-          // Host starts immediately with a new map
-          const seed = randomSeed();
-          this.map = generateMap(seed);
-          this._startGame();
+          this.hostId = peerId;
+          const code = peerId.slice(0, 8).toUpperCase();
+          this._showWaitingRoom(true, code);
         }, err => {
           createBtn.disabled = false;
           statusEl.textContent = '建立失敗：' + err;
@@ -601,18 +620,50 @@
         if (e.key === 'Enter') joinBtn.click();
       });
 
-      // Click code to copy
-      codeDisp.addEventListener('click', () => {
-        const code = codeDisp.textContent;
+      // Waiting room: click code to copy
+      document.getElementById('wr-code').addEventListener('click', () => {
+        const el = document.getElementById('wr-code');
+        const code = el.textContent;
         navigator.clipboard?.writeText(code).then(() => {
-          codeDisp.textContent = '已複製！';
-          setTimeout(() => { codeDisp.textContent = code; }, 1200);
+          el.textContent = '已複製！';
+          setTimeout(() => { el.textContent = code; }, 1200);
         });
       });
 
+      // Waiting room: map size selection (host only)
+      document.querySelectorAll('.size-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (!this.isHost) return;
+          this.roomSettings.mapSize = btn.dataset.size;
+          this._updateWaitingSettings();
+          this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
+        });
+      });
+
+      // Waiting room: start game (host only)
+      document.getElementById('btn-start-game').addEventListener('click', () => {
+        if (!this.isHost) return;
+        const size = MAP_SIZES[this.roomSettings.mapSize] || MAP_SIZES.medium;
+        MW = size.w; MH = size.h;
+        const seed = randomSeed();
+        this.map = generateMap(seed);
+        let spIdx = 1;
+        for (const [pid] of this.conns) {
+          this._sendTo(pid, {
+            type: 'welcome',
+            seed,
+            spawnIdx: spIdx % this.map.spawns.length,
+            mapSize: this.roomSettings.mapSize,
+            players: [],
+          });
+          spIdx++;
+        }
+        this._startGame();
+      });
+
       // "加入 Bot" button in HUD – only used by host
-      this.domBotBar      = document.getElementById('hud-bot-bar');
-      this.domBotCount    = document.getElementById('hud-bot-count');
+      this.domBotBar   = document.getElementById('hud-bot-bar');
+      this.domBotCount = document.getElementById('hud-bot-count');
       document.getElementById('btn-add-bot').addEventListener('click', () => {
         if (!this.running || !this.isHost) return;
         this._addBot();
@@ -659,6 +710,13 @@
       conn.on('close', () => {
         this.conns.delete(pid);
         this.players.delete(pid);
+        if (!this.running) {
+          this.waitingPeerIds = this.waitingPeerIds.filter(id => id !== pid);
+          if (this.isHost) {
+            this._broadcast({ type: 'playerListUpdate', peerIds: [...this.waitingPeerIds] });
+          }
+          this._updateWaitingRoomUI();
+        }
       });
     }
 
@@ -678,24 +736,67 @@
     _onMsg(fromId, msg) {
       switch (msg.type) {
         case 'hello':
-          // Client joined: send map seed + current players
+          // Client joined: send map seed + current players (or waiting room state)
           if (this.isHost) {
-            const spawnIdx = this.conns.size % this.map.spawns.length;
-            this._sendTo(fromId, {
-              type: 'welcome',
-              seed: this.map.seed,
-              spawnIdx,
-              players: [...this.players.entries()].map(([id, p]) => ({
-                id, x: p.x, y: p.y, angle: p.angle, hp: p.hp, isBot: p.isBot || false,
-              })),
-            });
-            // Tell existing players about the newcomer
-            this._broadcast({ type: 'playerJoin', id: fromId }, fromId);
+            if (this.running) {
+              // Late joiner: game already in progress – send map info immediately
+              const spawnIdx = this.conns.size % this.map.spawns.length;
+              this._sendTo(fromId, {
+                type: 'welcome',
+                seed: this.map.seed,
+                spawnIdx,
+                mapSize: this.roomSettings.mapSize,
+                players: [...this.players.entries()].map(([id, p]) => ({
+                  id, x: p.x, y: p.y, angle: p.angle, hp: p.hp, isBot: p.isBot || false,
+                })),
+              });
+              // Tell existing players about the newcomer
+              this._broadcast({ type: 'playerJoin', id: fromId }, fromId);
+            } else {
+              // Waiting room: add peer to the waiting list and notify everyone
+              if (!this.waitingPeerIds.includes(fromId)) {
+                this.waitingPeerIds.push(fromId);
+              }
+              this._sendTo(fromId, {
+                type: 'waitingAck',
+                hostId: this.myId,
+                settings: this.roomSettings,
+                peerIds: [...this.waitingPeerIds],
+              });
+              this._broadcast({ type: 'playerListUpdate', peerIds: [...this.waitingPeerIds] }, fromId);
+              this._updateWaitingRoomUI();
+            }
           }
           break;
 
+        case 'waitingAck':
+          // We (client) entered the waiting room
+          this.hostId = msg.hostId;
+          this.waitingPeerIds = msg.peerIds;
+          this.roomSettings = msg.settings;
+          this._showWaitingRoom(false);
+          this._updateWaitingRoomUI();
+          this._updateWaitingSettings();
+          break;
+
+        case 'playerListUpdate':
+          // Host updated the waiting room player list
+          this.waitingPeerIds = msg.peerIds;
+          this._updateWaitingRoomUI();
+          break;
+
+        case 'settingsUpdate':
+          // Host changed room settings
+          this.roomSettings = msg.settings;
+          this._updateWaitingSettings();
+          break;
+
         case 'welcome':
-          // We (client) received map + spawn from host
+          // We (client) received map + spawn from host – start the game
+          if (msg.mapSize) {
+            const sz = MAP_SIZES[msg.mapSize];
+            if (sz) { MW = sz.w; MH = sz.h; }
+          }
           this.map = generateMap(msg.seed);
           const sp = this.map.spawns[msg.spawnIdx % this.map.spawns.length];
           this.players.set(this.myId, mkPlayer(this.myId, sp.x, sp.y));
@@ -724,6 +825,11 @@
           if (msg.id !== this.myId) {
             let p = this.players.get(msg.id);
             if (!p) { p = mkPlayer(msg.id, msg.x, msg.y); this.players.set(msg.id, p); }
+            // Detect footstep movement and push a sound indicator if within range
+            if (!msg.dead && !p.dead) {
+              const moved = Math.hypot(msg.x - p.x, msg.y - p.y);
+              if (moved > 2) this._pushSoundInd(msg.x, msg.y, 'step');
+            }
             p.x = msg.x; p.y = msg.y; p.angle = msg.angle; p.hp = msg.hp;
             p.dead = msg.dead;
             if (msg.isBot) p.isBot = true;
@@ -736,6 +842,8 @@
             this.shotInds.push({ wx: msg.x, wy: msg.y, angle: msg.angle, ttl: IND_TTL });
             // Visual bullet trail from the shooter's perspective
             this._spawnBullet(msg.x, msg.y, msg.angle, false);
+            // Sound arc toward the shooter
+            this._pushSoundInd(msg.x, msg.y, 'shot');
           }
           break;
 
@@ -789,8 +897,9 @@
         this._updateBotCountDisplay();
       }
 
-      // Hide lobby, show canvas + HUD
+      // Hide lobby and waiting room, show canvas + HUD
       document.getElementById('lobby').style.display = 'none';
+      document.getElementById('waiting-room').style.display = 'none';
       document.getElementById('canvas-wrap').style.display = 'block';
       this.domHud.style.display = 'block';
 
@@ -803,6 +912,68 @@
       }
       const addBtn = document.getElementById('btn-add-bot');
       if (addBtn) addBtn.disabled = this.botCount >= MAX_BOTS;
+    }
+
+    // ── Waiting room helpers ───────────────────────────────────────────────
+    _showWaitingRoom(isHost, code) {
+      document.getElementById('lobby').style.display = 'none';
+      document.getElementById('waiting-room').style.display = 'flex';
+
+      const codeWrap = document.getElementById('wr-code-wrap');
+      const codeEl   = document.getElementById('wr-code');
+      if (code) {
+        codeWrap.style.display = 'flex';
+        codeEl.textContent = code;
+      }
+
+      document.getElementById('wr-settings-card').style.display = isHost ? 'flex' : 'none';
+      document.getElementById('btn-start-game').style.display   = isHost ? 'block' : 'none';
+      document.getElementById('wr-waiting-msg').style.display   = isHost ? 'none' : 'block';
+
+      // Disable size buttons for non-host clients (read-only view)
+      document.querySelectorAll('.size-btn').forEach(b => { b.disabled = !isHost; });
+
+      this._updateWaitingRoomUI();
+      this._updateWaitingSettings();
+    }
+
+    _updateWaitingRoomUI() {
+      const el = document.getElementById('wr-players');
+      if (!el) return;
+
+      const hostId    = this.hostId || this.myId;
+      const hostShort = hostId.slice(0, 8).toUpperCase();
+      const hostIsMe  = hostId === this.myId;
+
+      const entries = [
+        `<div class="player-entry is-host${hostIsMe ? ' is-self' : ''}">` +
+        `🎮 ${hostShort}` +
+        `${hostIsMe ? '（你·房主）' : '（房主）'}</div>`,
+      ];
+
+      for (const pid of this.waitingPeerIds) {
+        const short = pid.slice(0, 8).toUpperCase();
+        const isMe  = pid === this.myId;
+        entries.push(
+          `<div class="player-entry${isMe ? ' is-self' : ''}">` +
+          `👤 ${short}${isMe ? '（你）' : ''}</div>`
+        );
+      }
+
+      el.innerHTML = entries.join('');
+
+      // Update start button label with player count (host only)
+      const startBtn = document.getElementById('btn-start-game');
+      if (startBtn) {
+        const total = 1 + this.waitingPeerIds.length;
+        startBtn.textContent = `▶ 開始遊戲（${total} 人）`;
+      }
+    }
+
+    _updateWaitingSettings() {
+      document.querySelectorAll('.size-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.size === this.roomSettings.mapSize);
+      });
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -868,6 +1039,7 @@
       this._renderBullets();
       this._renderDarkness(me);
       this._renderIndicators(me);
+      this._renderSoundInds(me);
       this._renderHUD(me);
       this._renderJoysticks();
       this._syncState(dt, me);
@@ -1063,6 +1235,18 @@
     _updateIndicators(dt) {
       for (const s of this.shotInds) s.ttl -= dt;
       this.shotInds = this.shotInds.filter(s => s.ttl > 0);
+      for (const s of this.soundInds) s.ttl -= dt;
+      this.soundInds = this.soundInds.filter(s => s.ttl > 0);
+    }
+
+    // Push a sound-arc indicator if the source is within hearing range and not self
+    _pushSoundInd(wx, wy, type) {
+      const me = this.players.get(this.myId);
+      if (!me) return;
+      const d = Math.hypot(wx - me.x, wy - me.y);
+      if (d > 0 && d < SOUND_RANGE) {
+        this.soundInds.push({ wx, wy, ttl: SOUND_TTL, type });
+      }
     }
 
     // ── Bot: Add ───────────────────────────────────────────────────────────
@@ -1117,7 +1301,12 @@
           const d   = Math.hypot(tdx, tdy);
           if (d > 6) {
             bot.angle = Math.atan2(tdy, tdx);
+            const prevX = bot.x, prevY = bot.y;
             this._movePlayer(bot, (tdx / d) * BOT_SPD * dt, (tdy / d) * BOT_SPD * dt);
+            // Host-side footstep sound arc
+            if (Math.hypot(bot.x - prevX, bot.y - prevY) > 0.5) {
+              this._pushSoundInd(bot.x, bot.y, 'step');
+            }
           } else if (bot.botState === 'wander') {
             bot.botTarget = null;
           }
@@ -1190,6 +1379,8 @@
         type: 'shot', id: bot.id,
         x: bot.x, y: bot.y, angle: bot.angle,
       });
+      // Host-side sound arc for bot shot
+      this._pushSoundInd(bot.x, bot.y, 'shot');
     }
 
     // ── Camera ─────────────────────────────────────────────────────────────
@@ -1203,8 +1394,14 @@
       const g = this.playGfx;
       g.clear();
 
+      const me = this.players.get(this.myId);
+
       for (const [id, p] of this.players) {
         const isSelf = id === this.myId;
+
+        // Hide enemy/bot players that are outside the local player's FOV
+        if (!isSelf && me && !me.dead && !isInFov(this.map, me, p)) continue;
+
         let col;
         if (p.dead)        col = C.DEAD_P;
         else if (isSelf)   col = C.SELF;
@@ -1357,6 +1554,42 @@
       }
     }
 
+    // ── Render: Sound Arc Indicators ──────────────────────────────────────
+    _renderSoundInds(me) {
+      const g = this.soundGfx;
+      g.clear();
+      if (!this.soundInds.length) return;
+
+      const cx = this.app.screen.width  / 2;
+      const cy = this.app.screen.height / 2;
+
+      for (const s of this.soundInds) {
+        const alpha = clamp(s.ttl / SOUND_TTL, 0, 1);
+        // Direction from local player toward the sound source (world space)
+        const angle = Math.atan2(s.wy - me.y, s.wx - me.x);
+        const col   = s.type === 'shot' ? C.IND : C.SOUND_IND;
+
+        // Draw arc as polyline at fixed radius from screen centre
+        const segs = 18;
+        g.lineStyle(3.5, col, alpha * 0.88);
+        for (let i = 0; i <= segs; i++) {
+          const a = angle - SOUND_ARC_HALF + (i / segs) * SOUND_ARC_HALF * 2;
+          const x = cx + Math.cos(a) * SOUND_ARC_R;
+          const y = cy + Math.sin(a) * SOUND_ARC_R;
+          if (i === 0) g.moveTo(x, y);
+          else         g.lineTo(x, y);
+        }
+        g.lineStyle(0);
+
+        // Small filled tip at the midpoint of the arc to indicate direction
+        const tx = cx + Math.cos(angle) * (SOUND_ARC_R - SOUND_TIP_OFFSET);
+        const ty = cy + Math.sin(angle) * (SOUND_ARC_R - SOUND_TIP_OFFSET);
+        g.beginFill(col, alpha * 0.75);
+        g.drawCircle(tx, ty, 4);
+        g.endFill();
+      }
+    }
+
     // ── Render: HUD ────────────────────────────────────────────────────────
     _renderHUD(me) {
       const g   = this.hudGfx;
@@ -1410,15 +1643,13 @@
       const g = this.joyGfx;
       g.clear();
 
-      const isMobile = 'ontouchstart' in window;
-      if (!isMobile && !this.jL.on && !this.jR.on) return;
+      if (!this.jL.on && !this.jR.on) return;
 
       const radius = 50, innerR = 22;
-      const W = this.app.screen.width, H = this.app.screen.height;
 
-      const drawStick = (j, baseX, baseY) => {
-        const ox = j.on ? j.ox : baseX;
-        const oy = j.on ? j.oy : baseY;
+      const drawStick = (j) => {
+        // Origin is always the initial touch point
+        const ox = j.ox, oy = j.oy;
         const maxR = 55;
         const len  = Math.hypot(j.dx, j.dy);
         const clamped = Math.min(len, maxR);
@@ -1433,19 +1664,13 @@
         g.lineStyle(0);
 
         // Knob
-        g.beginFill(0xffffff, j.on ? 0.45 : 0.22);
+        g.beginFill(0xffffff, 0.45);
         g.drawCircle(ox + nx, oy + ny, innerR);
         g.endFill();
       };
 
-      // Show left joystick always on mobile, when active otherwise
-      if (isMobile || this.jL.on) {
-        drawStick(this.jL, 90, H - 110);
-      }
-      // Right joystick
-      if (isMobile || this.jR.on) {
-        drawStick(this.jR, W - 90, H - 110);
-      }
+      if (this.jL.on) drawStick(this.jL);
+      if (this.jR.on) drawStick(this.jR);
     }
 
     // ── Network: State Sync ───────────────────────────────────────────────
