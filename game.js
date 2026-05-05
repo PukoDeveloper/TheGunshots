@@ -504,14 +504,6 @@
         if (this.jL.on && t.identifier === this.jL.id) {
           this.jL.dx = t.clientX - this.jL.ox;
           this.jL.dy = t.clientY - this.jL.oy;
-          if (this.running) {
-            // Update facing from movement direction when no right joystick
-            if (!this.jR.on) {
-              const me = this.players.get(this.myId);
-              const len = Math.hypot(this.jL.dx, this.jL.dy);
-              if (me && len > 5) me.angle = Math.atan2(this.jL.dy, this.jL.dx);
-            }
-          }
         }
         if (this.jR.on && t.identifier === this.jR.id) {
           this.jR.dx = t.clientX - this.jR.ox;
@@ -1559,15 +1551,13 @@
       const g = this.joyGfx;
       g.clear();
 
-      const isMobile = 'ontouchstart' in window;
-      if (!isMobile && !this.jL.on && !this.jR.on) return;
+      if (!this.jL.on && !this.jR.on) return;
 
       const radius = 50, innerR = 22;
-      const W = this.app.screen.width, H = this.app.screen.height;
 
-      const drawStick = (j, baseX, baseY) => {
-        const ox = j.on ? j.ox : baseX;
-        const oy = j.on ? j.oy : baseY;
+      const drawStick = (j) => {
+        // Origin is always the initial touch point
+        const ox = j.ox, oy = j.oy;
         const maxR = 55;
         const len  = Math.hypot(j.dx, j.dy);
         const clamped = Math.min(len, maxR);
@@ -1582,19 +1572,13 @@
         g.lineStyle(0);
 
         // Knob
-        g.beginFill(0xffffff, j.on ? 0.45 : 0.22);
+        g.beginFill(0xffffff, 0.45);
         g.drawCircle(ox + nx, oy + ny, innerR);
         g.endFill();
       };
 
-      // Show left joystick always on mobile, when active otherwise
-      if (isMobile || this.jL.on) {
-        drawStick(this.jL, 90, H - 110);
-      }
-      // Right joystick
-      if (isMobile || this.jR.on) {
-        drawStick(this.jR, W - 90, H - 110);
-      }
+      if (this.jL.on) drawStick(this.jL);
+      if (this.jR.on) drawStick(this.jR);
     }
 
     // ── Network: State Sync ───────────────────────────────────────────────
