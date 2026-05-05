@@ -302,14 +302,14 @@
       align-items: center;
       justify-content: center;
       background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0a 100%);
-      gap: 16px;
+      gap: clamp(6px, 1.5vh, 16px);
       z-index: 10;
-      overflow-y: auto;
-      padding: 20px 0;
+      overflow: hidden;
+      padding: clamp(8px, 2vh, 20px) 0;
     }
 
     #waiting-room h1 {
-      font-size: clamp(1.4rem, 5vw, 2.2rem);
+      font-size: clamp(1.1rem, 3.5vh, 2.2rem);
       color: #ff4444;
       text-shadow: 0 0 20px #ff2222, 0 2px 4px #000;
       letter-spacing: 3px;
@@ -320,28 +320,33 @@
       display: none;
       flex-direction: column;
       align-items: center;
-      gap: 6px;
+      gap: clamp(4px, 0.8vh, 6px);
     }
-    #wr-code-wrap .label { font-size: 0.8rem; color: #888; letter-spacing: 1px; }
+    #wr-code-wrap .label { font-size: clamp(0.7rem, 1.5vh, 0.8rem); color: #888; letter-spacing: 1px; }
     #wr-code {
       font-family: 'Courier New', monospace;
-      font-size: clamp(1.2rem, 4vw, 1.8rem);
+      font-size: clamp(1rem, 3.5vh, 1.8rem);
       color: #44ff88;
       letter-spacing: 5px;
       background: #0a1a0a;
-      padding: 8px 16px;
+      padding: clamp(5px, 1vh, 8px) clamp(10px, 2vw, 16px);
       border-radius: 8px;
       border: 1px solid #44ff88;
       cursor: pointer;
     }
     #wr-code-wrap .hint { font-size: 0.72rem; color: #555; }
 
+    #waiting-room .lobby-card {
+      padding: clamp(10px, 1.8vh, 24px) clamp(16px, 3vw, 32px);
+      gap: clamp(6px, 1.2vh, 14px);
+    }
+
     #wr-players {
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: clamp(4px, 1vh, 8px);
       min-height: 40px;
-      max-height: 200px;
+      max-height: clamp(60px, 20vh, 200px);
       overflow-y: auto;
     }
 
@@ -349,7 +354,7 @@
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.08);
       border-radius: 6px;
-      padding: 8px 12px;
+      padding: clamp(4px, 0.8vh, 8px) 12px;
       font-size: 0.85rem;
       color: #ccc;
       letter-spacing: 1px;
