@@ -49,6 +49,11 @@
   const DOOR_D    = 54;            // max door-interaction distance (px)
   const SYNC_MS   = 80;            // state-sync interval (ms)
   const IND_TTL   = 2.5;           // shot-indicator time-to-live (s)
+  const SOUND_RANGE    = 380;      // max distance to hear footsteps / shots (px)
+  const SOUND_TTL      = 1.8;      // sound-arc indicator time-to-live (s)
+  const SOUND_ARC_R    = 88;       // radius of sound arc from screen centre (px)
+  const SOUND_ARC_HALF = Math.PI / 7; // ±~26° half-width of sound arc
+  const SOUND_TIP_OFFSET = 6;     // inward offset of the arc's direction dot (px)
   const RESPAWN_S = 3.5;           // respawn delay (s)
   const MAX_HP    = 100;
 
@@ -76,6 +81,7 @@
     DEAD_P:   0x555555,
     BULLET:   0xFFFF55,
     IND:      0xff2222,
+    SOUND_IND:0xffaa22,   // orange arc for footstep / nearby sound
     HP_BG:    0x2a2a2a,
     HP_FG:    0x44ee44,
     HP_LOW:   0xee4422,
@@ -245,6 +251,19 @@
     return pts;
   }
 
+  // Returns true if target is within the observer's FOV cone and has line-of-sight
+  function isInFov(map, obs, target) {
+    const dx = target.x - obs.x, dy = target.y - obs.y;
+    const dist = Math.hypot(dx, dy);
+    if (dist > FOV_DIST + P_RAD) return false;
+    const angleTo = Math.atan2(dy, dx);
+    const diff = Math.abs(normalizeAngle(angleTo - obs.angle));
+    if (diff > FOV_HALF) return false;
+    // Line-of-sight: ray must reach at least as far as the target's body edge
+    const ray = castRay(map, obs.x, obs.y, angleTo);
+    return ray.dist >= dist - P_RAD;
+  }
+
   // ─────────────────────────────────────────────────────────────────────────
   // AUDIO  (Web Audio API – procedural)
   // ─────────────────────────────────────────────────────────────────────────
@@ -291,6 +310,7 @@
       this.players  = new Map();   // peerId → playerState
       this.bullets  = [];          // active bullet objects
       this.shotInds = [];          // {wx,wy,angle,ttl}  shot indicators (world-space origin)
+      this.soundInds = [];         // {wx,wy,ttl,type}   sound-arc indicators (world-space origin)
       this.running  = false;
       this.syncTimer = 0;
 
@@ -325,6 +345,7 @@
       this.indGfx   = null;
       this.hudGfx   = null;
       this.joyGfx   = null;
+      this.soundGfx = null;
 
       // ── DOM HUD refs ───────────────────────────────────────────────────
       this.domHud       = document.getElementById('hud-overlay');
@@ -419,13 +440,15 @@
       // Darkness sprite (covers full screen, screen-space)
       this._rebuildDarkRT();
 
-      // Shot indicators + HUD + joystick (screen-space)
-      this.indGfx = new PIXI.Graphics();
-      this.hudGfx = new PIXI.Graphics();
-      this.joyGfx = new PIXI.Graphics();
+      // Shot indicators + HUD + joystick + sound arcs (screen-space)
+      this.indGfx   = new PIXI.Graphics();
+      this.hudGfx   = new PIXI.Graphics();
+      this.joyGfx   = new PIXI.Graphics();
+      this.soundGfx = new PIXI.Graphics();
       app.stage.addChild(this.indGfx);
       app.stage.addChild(this.hudGfx);
       app.stage.addChild(this.joyGfx);
+      app.stage.addChild(this.soundGfx);
 
       app.ticker.add(delta => this._tick(delta * (1 / 60)));
     }
@@ -802,6 +825,11 @@
           if (msg.id !== this.myId) {
             let p = this.players.get(msg.id);
             if (!p) { p = mkPlayer(msg.id, msg.x, msg.y); this.players.set(msg.id, p); }
+            // Detect footstep movement and push a sound indicator if within range
+            if (!msg.dead && !p.dead) {
+              const moved = Math.hypot(msg.x - p.x, msg.y - p.y);
+              if (moved > 2) this._pushSoundInd(msg.x, msg.y, 'step');
+            }
             p.x = msg.x; p.y = msg.y; p.angle = msg.angle; p.hp = msg.hp;
             p.dead = msg.dead;
             if (msg.isBot) p.isBot = true;
@@ -814,6 +842,8 @@
             this.shotInds.push({ wx: msg.x, wy: msg.y, angle: msg.angle, ttl: IND_TTL });
             // Visual bullet trail from the shooter's perspective
             this._spawnBullet(msg.x, msg.y, msg.angle, false);
+            // Sound arc toward the shooter
+            this._pushSoundInd(msg.x, msg.y, 'shot');
           }
           break;
 
@@ -1009,6 +1039,7 @@
       this._renderBullets();
       this._renderDarkness(me);
       this._renderIndicators(me);
+      this._renderSoundInds(me);
       this._renderHUD(me);
       this._renderJoysticks();
       this._syncState(dt, me);
@@ -1204,6 +1235,18 @@
     _updateIndicators(dt) {
       for (const s of this.shotInds) s.ttl -= dt;
       this.shotInds = this.shotInds.filter(s => s.ttl > 0);
+      for (const s of this.soundInds) s.ttl -= dt;
+      this.soundInds = this.soundInds.filter(s => s.ttl > 0);
+    }
+
+    // Push a sound-arc indicator if the source is within hearing range and not self
+    _pushSoundInd(wx, wy, type) {
+      const me = this.players.get(this.myId);
+      if (!me) return;
+      const d = Math.hypot(wx - me.x, wy - me.y);
+      if (d > 0 && d < SOUND_RANGE) {
+        this.soundInds.push({ wx, wy, ttl: SOUND_TTL, type });
+      }
     }
 
     // ── Bot: Add ───────────────────────────────────────────────────────────
@@ -1258,7 +1301,12 @@
           const d   = Math.hypot(tdx, tdy);
           if (d > 6) {
             bot.angle = Math.atan2(tdy, tdx);
+            const prevX = bot.x, prevY = bot.y;
             this._movePlayer(bot, (tdx / d) * BOT_SPD * dt, (tdy / d) * BOT_SPD * dt);
+            // Host-side footstep sound arc
+            if (Math.hypot(bot.x - prevX, bot.y - prevY) > 0.5) {
+              this._pushSoundInd(bot.x, bot.y, 'step');
+            }
           } else if (bot.botState === 'wander') {
             bot.botTarget = null;
           }
@@ -1331,6 +1379,8 @@
         type: 'shot', id: bot.id,
         x: bot.x, y: bot.y, angle: bot.angle,
       });
+      // Host-side sound arc for bot shot
+      this._pushSoundInd(bot.x, bot.y, 'shot');
     }
 
     // ── Camera ─────────────────────────────────────────────────────────────
@@ -1344,8 +1394,14 @@
       const g = this.playGfx;
       g.clear();
 
+      const me = this.players.get(this.myId);
+
       for (const [id, p] of this.players) {
         const isSelf = id === this.myId;
+
+        // Hide enemy/bot players that are outside the local player's FOV
+        if (!isSelf && me && !me.dead && !isInFov(this.map, me, p)) continue;
+
         let col;
         if (p.dead)        col = C.DEAD_P;
         else if (isSelf)   col = C.SELF;
@@ -1495,6 +1551,42 @@
         g.moveTo(sx, sy);
         g.lineTo(sx + dx * FOV_DIST, sy + dy * FOV_DIST);
         g.lineStyle(0);
+      }
+    }
+
+    // ── Render: Sound Arc Indicators ──────────────────────────────────────
+    _renderSoundInds(me) {
+      const g = this.soundGfx;
+      g.clear();
+      if (!this.soundInds.length) return;
+
+      const cx = this.app.screen.width  / 2;
+      const cy = this.app.screen.height / 2;
+
+      for (const s of this.soundInds) {
+        const alpha = clamp(s.ttl / SOUND_TTL, 0, 1);
+        // Direction from local player toward the sound source (world space)
+        const angle = Math.atan2(s.wy - me.y, s.wx - me.x);
+        const col   = s.type === 'shot' ? C.IND : C.SOUND_IND;
+
+        // Draw arc as polyline at fixed radius from screen centre
+        const segs = 18;
+        g.lineStyle(3.5, col, alpha * 0.88);
+        for (let i = 0; i <= segs; i++) {
+          const a = angle - SOUND_ARC_HALF + (i / segs) * SOUND_ARC_HALF * 2;
+          const x = cx + Math.cos(a) * SOUND_ARC_R;
+          const y = cy + Math.sin(a) * SOUND_ARC_R;
+          if (i === 0) g.moveTo(x, y);
+          else         g.lineTo(x, y);
+        }
+        g.lineStyle(0);
+
+        // Small filled tip at the midpoint of the arc to indicate direction
+        const tx = cx + Math.cos(angle) * (SOUND_ARC_R - SOUND_TIP_OFFSET);
+        const ty = cy + Math.sin(angle) * (SOUND_ARC_R - SOUND_TIP_OFFSET);
+        g.beginFill(col, alpha * 0.75);
+        g.drawCircle(tx, ty, 4);
+        g.endFill();
       }
     }
 
