@@ -27,8 +27,15 @@
   // CONSTANTS
   // ─────────────────────────────────────────────────────────────────────────
   const TS = 40;          // tile size (px)
-  const MW = 34;          // map width  (tiles)
-  const MH = 22;          // map height (tiles)
+  let   MW = 34;          // map width  (tiles) – configurable via waiting room
+  let   MH = 22;          // map height (tiles) – configurable via waiting room
+
+  // Map size presets for the waiting room settings panel
+  const MAP_SIZES = {
+    small:  { w: 24, h: 16 },
+    medium: { w: 34, h: 22 },
+    large:  { w: 46, h: 30 },
+  };
 
   const T = { WALL: 0, FLOOR: 1, DOOR: 2 };
 
@@ -290,6 +297,11 @@
       // ── Bot state ──────────────────────────────────────────────────────
       this.botCount = 0;
       this.botRng   = mkRng(Date.now());
+
+      // ── Waiting room state ─────────────────────────────────────────────
+      this.roomSettings  = { mapSize: 'medium' };
+      this.waitingPeerIds = [];   // peer IDs of non-host players in waiting room
+      this.hostId        = null;  // PeerJS ID of the host
 
       // ── Input ──────────────────────────────────────────────────────────
       this.keys = {};
@@ -561,23 +573,15 @@
       const joinBtn   = document.getElementById('btn-join');
       const joinInput = document.getElementById('join-input');
       const statusEl  = document.getElementById('status-msg');
-      const codeBox   = document.getElementById('room-code-box');
-      const codeDisp  = document.getElementById('code-display');
 
       createBtn.addEventListener('click', () => {
         createBtn.disabled = true;
         statusEl.textContent = '正在建立房間…';
         this._initPeer(null, peerId => {
-          const code = peerId.slice(0, 8).toUpperCase();
-          codeBox.style.display    = 'flex';
-          codeDisp.textContent     = code;
-          statusEl.textContent     = '等待玩家加入…（或直接開始）';
           this.isHost = true;
-
-          // Host starts immediately with a new map
-          const seed = randomSeed();
-          this.map = generateMap(seed);
-          this._startGame();
+          this.hostId = peerId;
+          const code = peerId.slice(0, 8).toUpperCase();
+          this._showWaitingRoom(true, code);
         }, err => {
           createBtn.disabled = false;
           statusEl.textContent = '建立失敗：' + err;
@@ -601,18 +605,50 @@
         if (e.key === 'Enter') joinBtn.click();
       });
 
-      // Click code to copy
-      codeDisp.addEventListener('click', () => {
-        const code = codeDisp.textContent;
+      // Waiting room: click code to copy
+      document.getElementById('wr-code').addEventListener('click', () => {
+        const el = document.getElementById('wr-code');
+        const code = el.textContent;
         navigator.clipboard?.writeText(code).then(() => {
-          codeDisp.textContent = '已複製！';
-          setTimeout(() => { codeDisp.textContent = code; }, 1200);
+          el.textContent = '已複製！';
+          setTimeout(() => { el.textContent = code; }, 1200);
         });
       });
 
+      // Waiting room: map size selection (host only)
+      document.querySelectorAll('.size-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (!this.isHost) return;
+          this.roomSettings.mapSize = btn.dataset.size;
+          this._updateWaitingSettings();
+          this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
+        });
+      });
+
+      // Waiting room: start game (host only)
+      document.getElementById('btn-start-game').addEventListener('click', () => {
+        if (!this.isHost) return;
+        const size = MAP_SIZES[this.roomSettings.mapSize] || MAP_SIZES.medium;
+        MW = size.w; MH = size.h;
+        const seed = randomSeed();
+        this.map = generateMap(seed);
+        let spIdx = 1;
+        for (const [pid] of this.conns) {
+          this._sendTo(pid, {
+            type: 'welcome',
+            seed,
+            spawnIdx: spIdx % this.map.spawns.length,
+            mapSize: this.roomSettings.mapSize,
+            players: [],
+          });
+          spIdx++;
+        }
+        this._startGame();
+      });
+
       // "加入 Bot" button in HUD – only used by host
-      this.domBotBar      = document.getElementById('hud-bot-bar');
-      this.domBotCount    = document.getElementById('hud-bot-count');
+      this.domBotBar   = document.getElementById('hud-bot-bar');
+      this.domBotCount = document.getElementById('hud-bot-count');
       document.getElementById('btn-add-bot').addEventListener('click', () => {
         if (!this.running || !this.isHost) return;
         this._addBot();
@@ -659,6 +695,13 @@
       conn.on('close', () => {
         this.conns.delete(pid);
         this.players.delete(pid);
+        if (!this.running) {
+          this.waitingPeerIds = this.waitingPeerIds.filter(id => id !== pid);
+          if (this.isHost) {
+            this._broadcast({ type: 'playerListUpdate', peerIds: [...this.waitingPeerIds] });
+          }
+          this._updateWaitingRoomUI();
+        }
       });
     }
 
@@ -678,24 +721,67 @@
     _onMsg(fromId, msg) {
       switch (msg.type) {
         case 'hello':
-          // Client joined: send map seed + current players
+          // Client joined: send map seed + current players (or waiting room state)
           if (this.isHost) {
-            const spawnIdx = this.conns.size % this.map.spawns.length;
-            this._sendTo(fromId, {
-              type: 'welcome',
-              seed: this.map.seed,
-              spawnIdx,
-              players: [...this.players.entries()].map(([id, p]) => ({
-                id, x: p.x, y: p.y, angle: p.angle, hp: p.hp, isBot: p.isBot || false,
-              })),
-            });
-            // Tell existing players about the newcomer
-            this._broadcast({ type: 'playerJoin', id: fromId }, fromId);
+            if (this.running) {
+              // Late joiner: game already in progress – send map info immediately
+              const spawnIdx = this.conns.size % this.map.spawns.length;
+              this._sendTo(fromId, {
+                type: 'welcome',
+                seed: this.map.seed,
+                spawnIdx,
+                mapSize: this.roomSettings.mapSize,
+                players: [...this.players.entries()].map(([id, p]) => ({
+                  id, x: p.x, y: p.y, angle: p.angle, hp: p.hp, isBot: p.isBot || false,
+                })),
+              });
+              // Tell existing players about the newcomer
+              this._broadcast({ type: 'playerJoin', id: fromId }, fromId);
+            } else {
+              // Waiting room: add peer to the waiting list and notify everyone
+              if (!this.waitingPeerIds.includes(fromId)) {
+                this.waitingPeerIds.push(fromId);
+              }
+              this._sendTo(fromId, {
+                type: 'waitingAck',
+                hostId: this.myId,
+                settings: this.roomSettings,
+                peerIds: [...this.waitingPeerIds],
+              });
+              this._broadcast({ type: 'playerListUpdate', peerIds: [...this.waitingPeerIds] }, fromId);
+              this._updateWaitingRoomUI();
+            }
           }
           break;
 
+        case 'waitingAck':
+          // We (client) entered the waiting room
+          this.hostId = msg.hostId;
+          this.waitingPeerIds = msg.peerIds;
+          this.roomSettings = msg.settings;
+          this._showWaitingRoom(false);
+          this._updateWaitingRoomUI();
+          this._updateWaitingSettings();
+          break;
+
+        case 'playerListUpdate':
+          // Host updated the waiting room player list
+          this.waitingPeerIds = msg.peerIds;
+          this._updateWaitingRoomUI();
+          break;
+
+        case 'settingsUpdate':
+          // Host changed room settings
+          this.roomSettings = msg.settings;
+          this._updateWaitingSettings();
+          break;
+
         case 'welcome':
-          // We (client) received map + spawn from host
+          // We (client) received map + spawn from host – start the game
+          if (msg.mapSize) {
+            const sz = MAP_SIZES[msg.mapSize];
+            if (sz) { MW = sz.w; MH = sz.h; }
+          }
           this.map = generateMap(msg.seed);
           const sp = this.map.spawns[msg.spawnIdx % this.map.spawns.length];
           this.players.set(this.myId, mkPlayer(this.myId, sp.x, sp.y));
@@ -789,8 +875,9 @@
         this._updateBotCountDisplay();
       }
 
-      // Hide lobby, show canvas + HUD
+      // Hide lobby and waiting room, show canvas + HUD
       document.getElementById('lobby').style.display = 'none';
+      document.getElementById('waiting-room').style.display = 'none';
       document.getElementById('canvas-wrap').style.display = 'block';
       this.domHud.style.display = 'block';
 
@@ -803,6 +890,68 @@
       }
       const addBtn = document.getElementById('btn-add-bot');
       if (addBtn) addBtn.disabled = this.botCount >= MAX_BOTS;
+    }
+
+    // ── Waiting room helpers ───────────────────────────────────────────────
+    _showWaitingRoom(isHost, code) {
+      document.getElementById('lobby').style.display = 'none';
+      document.getElementById('waiting-room').style.display = 'flex';
+
+      const codeWrap = document.getElementById('wr-code-wrap');
+      const codeEl   = document.getElementById('wr-code');
+      if (code) {
+        codeWrap.style.display = 'flex';
+        codeEl.textContent = code;
+      }
+
+      document.getElementById('wr-settings-card').style.display = isHost ? 'flex' : 'none';
+      document.getElementById('btn-start-game').style.display   = isHost ? 'block' : 'none';
+      document.getElementById('wr-waiting-msg').style.display   = isHost ? 'none' : 'block';
+
+      // Disable size buttons for non-host clients (read-only view)
+      document.querySelectorAll('.size-btn').forEach(b => { b.disabled = !isHost; });
+
+      this._updateWaitingRoomUI();
+      this._updateWaitingSettings();
+    }
+
+    _updateWaitingRoomUI() {
+      const el = document.getElementById('wr-players');
+      if (!el) return;
+
+      const hostId    = this.hostId || this.myId;
+      const hostShort = hostId.slice(0, 8).toUpperCase();
+      const hostIsMe  = hostId === this.myId;
+
+      const entries = [
+        `<div class="player-entry is-host${hostIsMe ? ' is-self' : ''}">` +
+        `🎮 ${hostShort}` +
+        `${hostIsMe ? '（你·房主）' : '（房主）'}</div>`,
+      ];
+
+      for (const pid of this.waitingPeerIds) {
+        const short = pid.slice(0, 8).toUpperCase();
+        const isMe  = pid === this.myId;
+        entries.push(
+          `<div class="player-entry${isMe ? ' is-self' : ''}">` +
+          `👤 ${short}${isMe ? '（你）' : ''}</div>`
+        );
+      }
+
+      el.innerHTML = entries.join('');
+
+      // Update start button label with player count (host only)
+      const startBtn = document.getElementById('btn-start-game');
+      if (startBtn) {
+        const total = 1 + this.waitingPeerIds.length;
+        startBtn.textContent = `▶ 開始遊戲（${total} 人）`;
+      }
+    }
+
+    _updateWaitingSettings() {
+      document.querySelectorAll('.size-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.size === this.roomSettings.mapSize);
+      });
     }
 
     // ══════════════════════════════════════════════════════════════════════

@@ -293,6 +293,104 @@
       #btn-interact.show { display: flex; align-items: center; justify-content: center; }
     }
 
+    /* ── Waiting room ── */
+    #waiting-room {
+      position: fixed; top: 0; left: 0;
+      width: var(--app-w); height: var(--app-h);
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0a 100%);
+      gap: 16px;
+      z-index: 10;
+      overflow-y: auto;
+      padding: 20px 0;
+    }
+
+    #waiting-room h1 {
+      font-size: clamp(1.4rem, 5vw, 2.2rem);
+      color: #ff4444;
+      text-shadow: 0 0 20px #ff2222, 0 2px 4px #000;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+    }
+
+    #wr-code-wrap {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+    #wr-code-wrap .label { font-size: 0.8rem; color: #888; letter-spacing: 1px; }
+    #wr-code {
+      font-family: 'Courier New', monospace;
+      font-size: clamp(1.2rem, 4vw, 1.8rem);
+      color: #44ff88;
+      letter-spacing: 5px;
+      background: #0a1a0a;
+      padding: 8px 16px;
+      border-radius: 8px;
+      border: 1px solid #44ff88;
+      cursor: pointer;
+    }
+    #wr-code-wrap .hint { font-size: 0.72rem; color: #555; }
+
+    #wr-players {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 40px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+
+    .player-entry {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 0.85rem;
+      color: #ccc;
+      letter-spacing: 1px;
+    }
+    .player-entry.is-host { border-color: rgba(255,170,68,0.35); color: #ffaa44; }
+    .player-entry.is-self { border-color: rgba(68,255,136,0.35); color: #44ff88; }
+
+    #wr-settings-card { display: none; }
+
+    .wr-size-row {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+
+    .size-btn {
+      flex: 1;
+      background: rgba(255,255,255,0.05);
+      color: #888;
+      border: 1px solid #333;
+    }
+    .size-btn.active {
+      background: #223366;
+      color: #aaddff;
+      border-color: #4488ff;
+      box-shadow: 0 0 10px rgba(68,136,255,0.25);
+    }
+    .size-btn:hover { background: rgba(255,255,255,0.1); color: #ccc; }
+    .size-btn:disabled { opacity: 0.55; cursor: default; }
+
+    #wr-waiting-msg {
+      font-size: 0.9rem;
+      color: #888;
+      letter-spacing: 1px;
+    }
+    #wr-status {
+      font-size: 0.85rem;
+      color: #ffaa44;
+      min-height: 20px;
+    }
+
     /* ── Controls hint ── */
     #controls-hint {
       font-size: 0.75rem;
@@ -386,6 +484,35 @@
     桌面：WASD 移動 · 滑鼠瞄準 · 左鍵射擊 · E 開門<br>
     手機：左搖桿移動（偏移越大越快）· 右搖桿瞄準 · 🔫 射擊按鈕 · 互動按鈕開門
   </p>
+</div>
+
+<!-- Waiting room -->
+<div id="waiting-room">
+  <h1>等待房間</h1>
+
+  <div id="wr-code-wrap">
+    <span class="label">房間代碼（分享給朋友）</span>
+    <span id="wr-code" title="點擊複製">——————</span>
+    <span class="hint">點擊代碼複製</span>
+  </div>
+
+  <div class="lobby-card">
+    <h2>玩家列表</h2>
+    <div id="wr-players"></div>
+  </div>
+
+  <div class="lobby-card" id="wr-settings-card">
+    <h2>地圖大小</h2>
+    <div class="wr-size-row">
+      <button class="btn size-btn" data-size="small">小</button>
+      <button class="btn size-btn active" data-size="medium">中</button>
+      <button class="btn size-btn" data-size="large">大</button>
+    </div>
+  </div>
+
+  <button class="btn btn-primary" id="btn-start-game" style="display:none; width:min(400px,90vw); padding:14px 28px;">▶ 開始遊戲</button>
+  <p id="wr-waiting-msg" style="display:none">等待房主開始遊戲…</p>
+  <p id="wr-status"></p>
 </div>
 
 <!-- Canvas container -->
