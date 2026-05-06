@@ -437,15 +437,25 @@
     .size-btn:disabled { opacity: 0.55; cursor: default; }
 
     #wr-waiting-msg {
+      display: none;
       font-size: 0.9rem;
       color: #888;
       letter-spacing: 1px;
+      text-align: center;
       flex-shrink: 0;
     }
     #wr-status {
       font-size: 0.85rem;
       color: #ffaa44;
       min-height: 20px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    #btn-start-game {
+      display: none;
+      width: 100%;
+      padding: 14px 28px;
       flex-shrink: 0;
     }
 
@@ -586,9 +596,9 @@
         </div>
       </div>
 
-      <button class="btn btn-primary" id="btn-start-game" style="display:none; width:100%; padding:14px 28px;">▶ 開始遊戲</button>
-      <p id="wr-waiting-msg" style="display:none; text-align:center;">等待房主開始遊戲…</p>
-      <p id="wr-status" style="text-align:center;"></p>
+      <button class="btn btn-primary" id="btn-start-game">▶ 開始遊戲</button>
+      <p id="wr-waiting-msg">等待房主開始遊戲…</p>
+      <p id="wr-status"></p>
     </div>
   </div>
 </div>
