@@ -328,20 +328,41 @@
       display: none;
       flex-direction: column;
       align-items: center;
-      justify-content: center;
+      justify-content: flex-start;
       background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0a 100%);
-      gap: clamp(6px, 1.5vh, 16px);
+      gap: clamp(4px, 1vh, 12px);
       z-index: 10;
       overflow: hidden;
-      padding: clamp(8px, 2vh, 20px) 0;
+      padding: clamp(6px, 1.5vh, 16px) clamp(8px, 2vw, 20px);
     }
 
     #waiting-room h1 {
-      font-size: clamp(1.1rem, 3.5vh, 2.2rem);
+      font-size: clamp(1rem, 3.5vh, 2.2rem);
       color: #ff4444;
       text-shadow: 0 0 20px #ff2222, 0 2px 4px #000;
       letter-spacing: 3px;
       text-transform: uppercase;
+      flex-shrink: 0;
+    }
+
+    /* Two-column grid layout */
+    #wr-columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: clamp(8px, 2vw, 20px);
+      width: 100%;
+      max-width: 900px;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .wr-col {
+      display: flex;
+      flex-direction: column;
+      gap: clamp(6px, 1.2vh, 12px);
+      overflow-y: auto;
+      min-height: 0;
     }
 
     #wr-code-wrap {
@@ -349,15 +370,16 @@
       flex-direction: column;
       align-items: center;
       gap: clamp(4px, 0.8vh, 6px);
+      flex-shrink: 0;
     }
     #wr-code-wrap .label { font-size: clamp(0.7rem, 1.5vh, 0.8rem); color: #888; letter-spacing: 1px; }
     #wr-code {
       font-family: 'Courier New', monospace;
-      font-size: clamp(1rem, 3.5vh, 1.8rem);
+      font-size: clamp(0.9rem, 3vh, 1.6rem);
       color: #44ff88;
       letter-spacing: 5px;
       background: #0a1a0a;
-      padding: clamp(5px, 1vh, 8px) clamp(10px, 2vw, 16px);
+      padding: clamp(4px, 0.8vh, 8px) clamp(10px, 2vw, 16px);
       border-radius: 8px;
       border: 1px solid #44ff88;
       cursor: pointer;
@@ -365,16 +387,17 @@
     #wr-code-wrap .hint { font-size: 0.72rem; color: #555; }
 
     #waiting-room .lobby-card {
-      padding: clamp(10px, 1.8vh, 24px) clamp(16px, 3vw, 32px);
-      gap: clamp(6px, 1.2vh, 14px);
+      padding: clamp(8px, 1.5vh, 20px) clamp(12px, 2.5vw, 28px);
+      gap: clamp(5px, 1vh, 12px);
+      width: 100%;
     }
 
     #wr-players {
       display: flex;
       flex-direction: column;
-      gap: clamp(4px, 1vh, 8px);
+      gap: clamp(4px, 0.8vh, 8px);
       min-height: 40px;
-      max-height: clamp(60px, 20vh, 200px);
+      max-height: clamp(80px, 28vh, 260px);
       overflow-y: auto;
     }
 
@@ -414,14 +437,26 @@
     .size-btn:disabled { opacity: 0.55; cursor: default; }
 
     #wr-waiting-msg {
+      display: none;
       font-size: 0.9rem;
       color: #888;
       letter-spacing: 1px;
+      text-align: center;
+      flex-shrink: 0;
     }
     #wr-status {
       font-size: 0.85rem;
       color: #ffaa44;
       min-height: 20px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    #btn-start-game {
+      display: none;
+      width: 100%;
+      padding: 14px 28px;
+      flex-shrink: 0;
     }
 
     /* ── Controls hint ── */
@@ -523,41 +558,49 @@
 <div id="waiting-room">
   <h1>等待房間</h1>
 
-  <div id="wr-code-wrap">
-    <span class="label">房間代碼（分享給朋友）</span>
-    <span id="wr-code" title="點擊複製">——————</span>
-    <span class="hint">點擊代碼複製</span>
-  </div>
+  <div id="wr-columns">
+    <!-- Left column: room code + player list -->
+    <div class="wr-col">
+      <div id="wr-code-wrap">
+        <span class="label">房間代碼（分享給朋友）</span>
+        <span id="wr-code" title="點擊複製">——————</span>
+        <span class="hint">點擊代碼複製</span>
+      </div>
 
-  <div class="lobby-card">
-    <h2>玩家列表</h2>
-    <div id="wr-players"></div>
-  </div>
+      <div class="lobby-card">
+        <h2>玩家列表</h2>
+        <div id="wr-players"></div>
+      </div>
+    </div>
 
-  <div class="lobby-card" id="wr-settings-card">
-    <h2>遊戲設定</h2>
-    <div class="wr-sub-label">地圖大小</div>
-    <div class="wr-size-row">
-      <button class="btn size-btn" data-size="small">小</button>
-      <button class="btn size-btn active" data-size="medium">中</button>
-      <button class="btn size-btn" data-size="large">大</button>
-    </div>
-    <div class="wr-sub-label">機器人數量</div>
-    <div class="wr-bot-row">
-      <button class="btn size-btn" id="wr-bot-dec">−</button>
-      <span id="wr-bot-display">0</span>
-      <button class="btn size-btn" id="wr-bot-inc">+</button>
-    </div>
-    <div class="wr-sub-label">遊戲模式</div>
-    <div class="wr-size-row">
-      <button class="btn mode-btn active" data-mode="ffa">自由競技</button>
-      <button class="btn mode-btn" data-mode="team">兩隊模式</button>
+    <!-- Right column: settings + action -->
+    <div class="wr-col">
+      <div class="lobby-card" id="wr-settings-card">
+        <h2>遊戲設定</h2>
+        <div class="wr-sub-label">地圖大小</div>
+        <div class="wr-size-row">
+          <button class="btn size-btn" data-size="small">小</button>
+          <button class="btn size-btn active" data-size="medium">中</button>
+          <button class="btn size-btn" data-size="large">大</button>
+        </div>
+        <div class="wr-sub-label">機器人數量</div>
+        <div class="wr-bot-row">
+          <button class="btn size-btn" id="wr-bot-dec">−</button>
+          <span id="wr-bot-display">0</span>
+          <button class="btn size-btn" id="wr-bot-inc">+</button>
+        </div>
+        <div class="wr-sub-label">遊戲模式</div>
+        <div class="wr-size-row">
+          <button class="btn mode-btn active" data-mode="ffa">自由競技</button>
+          <button class="btn mode-btn" data-mode="team">兩隊模式</button>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="btn-start-game">▶ 開始遊戲</button>
+      <p id="wr-waiting-msg">等待房主開始遊戲…</p>
+      <p id="wr-status"></p>
     </div>
   </div>
-
-  <button class="btn btn-primary" id="btn-start-game" style="display:none; width:min(400px,90vw); padding:14px 28px;">▶ 開始遊戲</button>
-  <p id="wr-waiting-msg" style="display:none">等待房主開始遊戲…</p>
-  <p id="wr-status"></p>
 </div>
 
 <!-- Canvas container -->
