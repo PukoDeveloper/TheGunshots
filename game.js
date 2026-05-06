@@ -117,6 +117,15 @@
 
   function randomSeed() { return (Math.random() * 0xFFFFFF | 0) + 1; }
 
+  // Fisher-Yates in-place shuffle (mutates and returns the array)
+  function shuffleArray(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+  }
+
   function normalizeAngle(a) {
     while (a >  Math.PI) a -= 2 * Math.PI;
     while (a < -Math.PI) a += 2 * Math.PI;
@@ -319,6 +328,10 @@
       // ── Bot state ──────────────────────────────────────────────────────
       this.botCount = 0;
       this.botRng   = mkRng(Date.now());
+
+      // ── Spawn assignments (set by host at game start) ──────────────────
+      this.mySpawnIdx    = 0;      // host's own assigned spawn index
+      this.teamSpawnIdxs = null;   // { 0: spawnIdx, 1: spawnIdx } in team mode
 
       // ── Waiting room state ─────────────────────────────────────────────
       this.roomSettings  = { mapSize: 'medium', botCount: 0, gameMode: 'ffa' };
@@ -685,13 +698,8 @@
         const seed = randomSeed();
         this.map = generateMap(seed);
 
-        // Spawn bots (before building team assignments so bot IDs are known)
-        this.botCount = 0;
-        for (let i = 0; i < this.roomSettings.botCount; i++) {
-          this._addBot(false);   // false = don't broadcast yet (sent in welcome.players)
-        }
-
-        // Build ordered player list for team assignment
+        // Build ordered player list for team/spawn assignment
+        // (bot IDs are predictable: bot-0, bot-1, … since botCount is reset to 0)
         const allPlayerIds = [this.myId, ...this.waitingPeerIds];
         for (let i = 0; i < this.roomSettings.botCount; i++) {
           allPlayerIds.push('bot-' + i);
@@ -703,27 +711,57 @@
           allPlayerIds.forEach((pid, idx) => { teamAssignments[pid] = idx % 2; });
         }
 
+        // Assign random spawn indices: FFA → each player a different random point;
+        // team mode → each team gets its own randomly chosen spawn point
+        const numSpawns = this.map.spawns.length;
+        const spawnAssignments = {};
+        if (this.roomSettings.gameMode === 'team') {
+          const idxA = Math.floor(Math.random() * numSpawns);
+          const idxB = numSpawns > 1
+            ? (idxA + 1 + Math.floor(Math.random() * (numSpawns - 1))) % numSpawns
+            : idxA;
+          this.teamSpawnIdxs = { 0: idxA, 1: idxB };
+          allPlayerIds.forEach(pid => {
+            spawnAssignments[pid] = this.teamSpawnIdxs[teamAssignments[pid] ?? 0];
+          });
+        } else {
+          this.teamSpawnIdxs = null;
+          // Build enough shuffled indices so every player gets a unique spawn
+          // before any is reused (each spawn point used once per "round").
+          const shuffled = [];
+          while (shuffled.length < allPlayerIds.length) {
+            shuffled.push(...shuffleArray(Array.from({ length: numSpawns }, (_, i) => i)));
+          }
+          allPlayerIds.forEach((pid, i) => { spawnAssignments[pid] = shuffled[i]; });
+        }
+        this.mySpawnIdx = spawnAssignments[this.myId] ?? 0;
+
+        // Spawn bots with their assigned positions (don't broadcast yet)
+        this.botCount = 0;
+        for (let i = 0; i < this.roomSettings.botCount; i++) {
+          this._addBot(false, spawnAssignments['bot-' + i]);
+        }
+
         // Apply teams to local players (host + bots)
         for (const [pid, p] of this.players) {
           p.team = (this.roomSettings.gameMode === 'team') ? (teamAssignments[pid] ?? 0) : 0;
         }
 
-        // Send welcome to each peer (includes bots and team assignments)
-        let spIdx = 1;
+        // Send welcome to each peer (includes bots, team assignments, and spawn info)
         for (const [pid] of this.conns) {
           this._sendTo(pid, {
             type: 'welcome',
             seed,
-            spawnIdx: spIdx % this.map.spawns.length,
+            spawnIdx: spawnAssignments[pid] ?? 0,
             mapSize: this.roomSettings.mapSize,
             gameMode: this.roomSettings.gameMode,
             teams: teamAssignments,
+            teamSpawnIdxs: this.teamSpawnIdxs,
             players: [...this.players.entries()].map(([id, p]) => ({
               id, x: p.x, y: p.y, angle: p.angle, hp: p.hp,
               isBot: p.isBot || false, team: p.team ?? 0,
             })),
           });
-          spIdx++;
         }
         this._startGame();
       });
@@ -799,7 +837,7 @@
           if (this.isHost) {
             if (this.running) {
               // Late joiner: game already in progress – send map info immediately
-              const spawnIdx = this.conns.size % this.map.spawns.length;
+              const spawnIdx = Math.floor(Math.random() * this.map.spawns.length);
               this._sendTo(fromId, {
                 type: 'welcome',
                 seed: this.map.seed,
@@ -807,6 +845,7 @@
                 mapSize: this.roomSettings.mapSize,
                 gameMode: this.roomSettings.gameMode,
                 teams: Object.fromEntries([...this.players.entries()].map(([id, p]) => [id, p.team ?? 0])),
+                teamSpawnIdxs: this.teamSpawnIdxs,
                 players: [...this.players.entries()].map(([id, p]) => ({
                   id, x: p.x, y: p.y, angle: p.angle, hp: p.hp,
                   isBot: p.isBot || false, team: p.team ?? 0,
@@ -879,6 +918,7 @@
             if (sz) { MW = sz.w; MH = sz.h; }
           }
           if (msg.gameMode) this.roomSettings.gameMode = msg.gameMode;
+          this.teamSpawnIdxs = msg.teamSpawnIdxs || null;
           this.map = generateMap(msg.seed);
           const sp = this.map.spawns[msg.spawnIdx % this.map.spawns.length];
           const mePlayer = mkPlayer(this.myId, sp.x, sp.y);
@@ -965,7 +1005,7 @@
     _startGame() {
       // Spawn local player if not already created
       if (!this.players.has(this.myId)) {
-        const spawnIdx = this.isHost ? 0 : (this.players.size % this.map.spawns.length);
+        const spawnIdx = this.isHost ? this.mySpawnIdx : (this.players.size % this.map.spawns.length);
         const sp = this.map.spawns[spawnIdx];
         this.players.set(this.myId, mkPlayer(this.myId, sp.x, sp.y));
       }
@@ -1268,8 +1308,7 @@
         // Respawn bot after delay
         setTimeout(() => {
           if (!this.players.has(botId)) return;
-          const spIdx = this.botCount % this.map.spawns.length;
-          const sp = this.map.spawns[spIdx];
+          const sp = this.map.spawns[this._pickRespawnIdx(bot)];
           bot.x = sp.x; bot.y = sp.y;
           bot.hp = MAX_HP;
           bot.dead = false;
@@ -1330,11 +1369,19 @@
       setTimeout(() => this._respawn(), RESPAWN_S * 1000);
     }
 
+    // Returns a spawn index for the given player: team-based in team mode, random otherwise
+    _pickRespawnIdx(player) {
+      const n = this.map.spawns.length;
+      if (this.roomSettings.gameMode === 'team' && this.teamSpawnIdxs) {
+        return this.teamSpawnIdxs[player.team ?? 0] ?? 0;
+      }
+      return Math.floor(Math.random() * n);
+    }
+
     _respawn() {
       const me = this.players.get(this.myId);
       if (!me) return;
-      const spIdx = [...this.players.keys()].indexOf(this.myId) % this.map.spawns.length;
-      const sp = this.map.spawns[spIdx];
+      const sp = this.map.spawns[this._pickRespawnIdx(me)];
       me.x = sp.x; me.y = sp.y;
       me.hp = MAX_HP;
       me.dead = false;
@@ -1360,11 +1407,13 @@
     }
 
     // ── Bot: Add ───────────────────────────────────────────────────────────
-    _addBot(broadcast = true) {
+    _addBot(broadcast = true, spawnIdx = null) {
       const botId   = 'bot-' + this.botCount;
       this.botCount += 1;
-      const spIdx   = (this.players.size) % this.map.spawns.length;
-      const sp      = this.map.spawns[spIdx];
+      const resolvedSpawnIdx = spawnIdx !== null
+        ? spawnIdx
+        : Math.floor(Math.random() * this.map.spawns.length);
+      const sp      = this.map.spawns[resolvedSpawnIdx];
       const bot     = mkPlayer(botId, sp.x, sp.y);
       bot.isBot        = true;
       bot.botState     = 'wander';     // 'wander' | 'chase'
