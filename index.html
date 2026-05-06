@@ -195,7 +195,6 @@
     }
 
     /* Allow pointer events on interactive HUD children */
-    #hud-bot-bar { pointer-events: auto; }
 
     #hud-dead {
       display: none;
@@ -236,17 +235,46 @@
     }
     #hud-room-code.show { display: block; }
 
-    /* Bot bar (top-left, host only) */
-    #hud-bot-bar {
-      display: none;
-      position: absolute;
-      top: 10px; left: 12px;
-      align-items: center;
-      gap: 8px;
+    /* Waiting room sub-section label */
+    .wr-sub-label {
+      font-size: 0.78rem;
+      color: #777;
+      letter-spacing: 1px;
+      text-align: center;
+      text-transform: uppercase;
     }
-    #hud-bot-bar.show { display: flex; }
-    #hud-bot-bar .btn { padding: 6px 14px; font-size: 0.78rem; letter-spacing: 0; }
-    #hud-bot-count { font-size: 0.78rem; color: #ff9922; font-family: 'Courier New', monospace; }
+
+    /* Bot count row in waiting room */
+    .wr-bot-row {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      align-items: center;
+    }
+    .wr-bot-row .size-btn { flex: 0; min-width: 36px; padding: 6px 12px; }
+    #wr-bot-display {
+      min-width: 36px;
+      text-align: center;
+      font-size: 1rem;
+      color: #ff9922;
+      font-family: 'Courier New', monospace;
+    }
+
+    /* Game mode buttons */
+    .mode-btn {
+      flex: 1;
+      background: rgba(255,255,255,0.05);
+      color: #888;
+      border: 1px solid #333;
+    }
+    .mode-btn.active {
+      background: #223366;
+      color: #aaddff;
+      border-color: #4488ff;
+      box-shadow: 0 0 10px rgba(68,136,255,0.25);
+    }
+    .mode-btn:hover { background: rgba(255,255,255,0.1); color: #ccc; }
+    .mode-btn:disabled { opacity: 0.55; cursor: default; }
 
     /* ── Mobile action buttons ── */
     .mobile-action-btn {
@@ -507,11 +535,23 @@
   </div>
 
   <div class="lobby-card" id="wr-settings-card">
-    <h2>地圖大小</h2>
+    <h2>遊戲設定</h2>
+    <div class="wr-sub-label">地圖大小</div>
     <div class="wr-size-row">
       <button class="btn size-btn" data-size="small">小</button>
       <button class="btn size-btn active" data-size="medium">中</button>
       <button class="btn size-btn" data-size="large">大</button>
+    </div>
+    <div class="wr-sub-label">機器人數量</div>
+    <div class="wr-bot-row">
+      <button class="btn size-btn" id="wr-bot-dec">−</button>
+      <span id="wr-bot-display">0</span>
+      <button class="btn size-btn" id="wr-bot-inc">+</button>
+    </div>
+    <div class="wr-sub-label">遊戲模式</div>
+    <div class="wr-size-row">
+      <button class="btn mode-btn active" data-mode="ffa">自由競技</button>
+      <button class="btn mode-btn" data-mode="team">兩隊模式</button>
     </div>
   </div>
 
@@ -531,11 +571,6 @@
   </div>
   <div id="hud-door-prompt">[E] 開門</div>
   <div id="hud-room-code"></div>
-  <!-- Bot bar: host only, top-left -->
-  <div id="hud-bot-bar">
-    <button class="btn btn-secondary" id="btn-add-bot">🤖 加入 Bot</button>
-    <span id="hud-bot-count">0 / 4</span>
-  </div>
   <!-- Mobile action buttons -->
   <button class="mobile-action-btn" id="btn-shoot">🔫</button>
   <button class="mobile-action-btn" id="btn-interact"></button>
