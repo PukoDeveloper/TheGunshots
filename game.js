@@ -854,7 +854,7 @@
 
         case 'roomFull':
           // Host rejected us – room is at capacity
-          document.getElementById('status-msg').textContent = '房間已滿（最多 ' + MAX_PLAYERS + ' 人）';
+          document.getElementById('status-msg').textContent = `房間已滿（最多 ${MAX_PLAYERS} 人）`;
           document.getElementById('btn-join').disabled = false;
           if (this.peer) { this.peer.destroy(); this.peer = null; }
           break;
@@ -1021,7 +1021,13 @@
       const hostIsMe  = hostId === this.myId;
       const isTeam    = this.roomSettings.gameMode === 'team';
 
-      const teamLabel = (idx) => isTeam ? (idx % 2 === 0 ? ' <span style="color:#44aaff">[A隊]</span>' : ' <span style="color:#ff4433">[B隊]</span>') : '';
+      const teamAColor = '#' + C.TEAM_A.toString(16).padStart(6, '0');
+      const teamBColor = '#' + C.TEAM_B.toString(16).padStart(6, '0');
+      const teamLabel = (idx) => isTeam
+        ? (idx % 2 === 0
+          ? ` <span style="color:${teamAColor}">[A隊]</span>`
+          : ` <span style="color:${teamBColor}">[B隊]</span>`)
+        : '';
 
       const entries = [
         `<div class="player-entry is-host${hostIsMe ? ' is-self' : ''}">` +
