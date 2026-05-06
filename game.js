@@ -726,8 +726,13 @@
           });
         } else {
           this.teamSpawnIdxs = null;
-          const shuffled = shuffleArray(Array.from({ length: numSpawns }, (_, i) => i));
-          allPlayerIds.forEach((pid, i) => { spawnAssignments[pid] = shuffled[i % numSpawns]; });
+          // Build enough shuffled indices so every player gets a unique spawn
+          // before any is reused (each spawn point used once per "round").
+          const shuffled = [];
+          while (shuffled.length < allPlayerIds.length) {
+            shuffled.push(...shuffleArray(Array.from({ length: numSpawns }, (_, i) => i)));
+          }
+          allPlayerIds.forEach((pid, i) => { spawnAssignments[pid] = shuffled[i]; });
         }
         this.mySpawnIdx = spawnAssignments[this.myId] ?? 0;
 
