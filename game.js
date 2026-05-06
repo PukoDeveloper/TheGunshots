@@ -66,7 +66,7 @@
   const BOT_SHOOT_CD  = 1.8;       // seconds between bot shots
   const BOT_SIGHT     = 280;       // bot detection radius (px)
   const BOT_AIM_TOL   = Math.PI / 5; // ±36° aim tolerance before bot shoots
-  const MAX_BOTS      = 4;         // max bots per room
+  const MAX_PLAYERS   = 8;         // max total players (humans + bots) per room
 
   const C = {
     FLOOR:    0x252525,
@@ -78,6 +78,8 @@
     SELF:     0x44ff88,
     ENEMY:    0xff5533,
     BOT:      0xff9922,   // orange – distinct from human enemy (red)
+    TEAM_A:   0x44aaff,   // blue – team A ally
+    TEAM_B:   0xff4433,   // red  – team B enemy
     DEAD_P:   0x555555,
     BULLET:   0xFFFF55,
     IND:      0xff2222,
@@ -319,7 +321,7 @@
       this.botRng   = mkRng(Date.now());
 
       // ── Waiting room state ─────────────────────────────────────────────
-      this.roomSettings  = { mapSize: 'medium' };
+      this.roomSettings  = { mapSize: 'medium', botCount: 0, gameMode: 'ffa' };
       this.waitingPeerIds = [];   // peer IDs of non-host players in waiting room
       this.hostId        = null;  // PeerJS ID of the host
 
@@ -640,6 +642,41 @@
         });
       });
 
+      // Waiting room: bot count (host only)
+      document.getElementById('wr-bot-dec').addEventListener('click', () => {
+        if (!this.isHost) return;
+        const humans = 1 + this.waitingPeerIds.length;
+        if (this.roomSettings.botCount > 0) {
+          this.roomSettings.botCount--;
+          this._updateWaitingSettings();
+          this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
+          this._updateWaitingRoomUI();
+        }
+      });
+
+      document.getElementById('wr-bot-inc').addEventListener('click', () => {
+        if (!this.isHost) return;
+        const humans = 1 + this.waitingPeerIds.length;
+        const maxBots = MAX_PLAYERS - humans;
+        if (this.roomSettings.botCount < maxBots) {
+          this.roomSettings.botCount++;
+          this._updateWaitingSettings();
+          this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
+          this._updateWaitingRoomUI();
+        }
+      });
+
+      // Waiting room: game mode (host only)
+      document.querySelectorAll('.mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          if (!this.isHost) return;
+          this.roomSettings.gameMode = btn.dataset.mode;
+          this._updateWaitingSettings();
+          this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
+          this._updateWaitingRoomUI();
+        });
+      });
+
       // Waiting room: start game (host only)
       document.getElementById('btn-start-game').addEventListener('click', () => {
         if (!this.isHost) return;
@@ -647,6 +684,31 @@
         MW = size.w; MH = size.h;
         const seed = randomSeed();
         this.map = generateMap(seed);
+
+        // Spawn bots (before building team assignments so bot IDs are known)
+        this.botCount = 0;
+        for (let i = 0; i < this.roomSettings.botCount; i++) {
+          this._addBot(false);   // false = don't broadcast yet (sent in welcome.players)
+        }
+
+        // Build ordered player list for team assignment
+        const allPlayerIds = [this.myId, ...this.waitingPeerIds];
+        for (let i = 0; i < this.roomSettings.botCount; i++) {
+          allPlayerIds.push('bot-' + i);
+        }
+
+        // Assign teams (team mode only)
+        const teamAssignments = {};
+        if (this.roomSettings.gameMode === 'team') {
+          allPlayerIds.forEach((pid, idx) => { teamAssignments[pid] = idx % 2; });
+        }
+
+        // Apply teams to local players (host + bots)
+        for (const [pid, p] of this.players) {
+          p.team = (this.roomSettings.gameMode === 'team') ? (teamAssignments[pid] ?? 0) : 0;
+        }
+
+        // Send welcome to each peer (includes bots and team assignments)
         let spIdx = 1;
         for (const [pid] of this.conns) {
           this._sendTo(pid, {
@@ -654,19 +716,16 @@
             seed,
             spawnIdx: spIdx % this.map.spawns.length,
             mapSize: this.roomSettings.mapSize,
-            players: [],
+            gameMode: this.roomSettings.gameMode,
+            teams: teamAssignments,
+            players: [...this.players.entries()].map(([id, p]) => ({
+              id, x: p.x, y: p.y, angle: p.angle, hp: p.hp,
+              isBot: p.isBot || false, team: p.team ?? 0,
+            })),
           });
           spIdx++;
         }
         this._startGame();
-      });
-
-      // "加入 Bot" button in HUD – only used by host
-      this.domBotBar   = document.getElementById('hud-bot-bar');
-      this.domBotCount = document.getElementById('hud-bot-count');
-      document.getElementById('btn-add-bot').addEventListener('click', () => {
-        if (!this.running || !this.isHost) return;
-        this._addBot();
       });
     }
 
@@ -746,16 +805,29 @@
                 seed: this.map.seed,
                 spawnIdx,
                 mapSize: this.roomSettings.mapSize,
+                gameMode: this.roomSettings.gameMode,
+                teams: Object.fromEntries([...this.players.entries()].map(([id, p]) => [id, p.team ?? 0])),
                 players: [...this.players.entries()].map(([id, p]) => ({
-                  id, x: p.x, y: p.y, angle: p.angle, hp: p.hp, isBot: p.isBot || false,
+                  id, x: p.x, y: p.y, angle: p.angle, hp: p.hp,
+                  isBot: p.isBot || false, team: p.team ?? 0,
                 })),
               });
               // Tell existing players about the newcomer
               this._broadcast({ type: 'playerJoin', id: fromId }, fromId);
             } else {
-              // Waiting room: add peer to the waiting list and notify everyone
+              // Waiting room: enforce max player limit
+              const totalPlayers = 1 + this.waitingPeerIds.length + this.roomSettings.botCount;
+              if (totalPlayers >= MAX_PLAYERS) {
+                this._sendTo(fromId, { type: 'roomFull' });
+                return;
+              }
               if (!this.waitingPeerIds.includes(fromId)) {
                 this.waitingPeerIds.push(fromId);
+                // Reduce bot count if humans now exceed available slots
+                const maxBots = MAX_PLAYERS - 1 - this.waitingPeerIds.length;
+                if (this.roomSettings.botCount > maxBots) {
+                  this.roomSettings.botCount = Math.max(0, maxBots);
+                }
               }
               this._sendTo(fromId, {
                 type: 'waitingAck',
@@ -764,6 +836,7 @@
                 peerIds: [...this.waitingPeerIds],
               });
               this._broadcast({ type: 'playerListUpdate', peerIds: [...this.waitingPeerIds] }, fromId);
+              this._updateWaitingSettings();
               this._updateWaitingRoomUI();
             }
           }
@@ -779,6 +852,13 @@
           this._updateWaitingSettings();
           break;
 
+        case 'roomFull':
+          // Host rejected us – room is at capacity
+          document.getElementById('status-msg').textContent = '房間已滿（最多 ' + MAX_PLAYERS + ' 人）';
+          document.getElementById('btn-join').disabled = false;
+          if (this.peer) { this.peer.destroy(); this.peer = null; }
+          break;
+
         case 'playerListUpdate':
           // Host updated the waiting room player list
           this.waitingPeerIds = msg.peerIds;
@@ -789,6 +869,7 @@
           // Host changed room settings
           this.roomSettings = msg.settings;
           this._updateWaitingSettings();
+          this._updateWaitingRoomUI();
           break;
 
         case 'welcome':
@@ -797,14 +878,18 @@
             const sz = MAP_SIZES[msg.mapSize];
             if (sz) { MW = sz.w; MH = sz.h; }
           }
+          if (msg.gameMode) this.roomSettings.gameMode = msg.gameMode;
           this.map = generateMap(msg.seed);
           const sp = this.map.spawns[msg.spawnIdx % this.map.spawns.length];
-          this.players.set(this.myId, mkPlayer(this.myId, sp.x, sp.y));
-          // Add existing players
+          const mePlayer = mkPlayer(this.myId, sp.x, sp.y);
+          if (msg.teams && msg.teams[this.myId] !== undefined) mePlayer.team = msg.teams[this.myId];
+          this.players.set(this.myId, mePlayer);
+          // Add existing players (including bots spawned by host)
           for (const pd of msg.players) {
             if (pd.id !== this.myId) {
               const existing = mkPlayer(pd.id, pd.x, pd.y);
               if (pd.isBot) existing.isBot = true;
+              if (pd.team !== undefined) existing.team = pd.team;
               this.players.set(pd.id, existing);
             }
           }
@@ -833,6 +918,7 @@
             p.x = msg.x; p.y = msg.y; p.angle = msg.angle; p.hp = msg.hp;
             p.dead = msg.dead;
             if (msg.isBot) p.isBot = true;
+            if (msg.team !== undefined) p.team = msg.team;
           }
           break;
 
@@ -891,12 +977,6 @@
       this.domRoomCode.textContent = '房間: ' + code;
       this.domRoomCode.classList.add('show');
 
-      // Show bot bar only for host
-      if (this.isHost) {
-        this.domBotBar.classList.add('show');
-        this._updateBotCountDisplay();
-      }
-
       // Hide lobby and waiting room, show canvas + HUD
       document.getElementById('lobby').style.display = 'none';
       document.getElementById('waiting-room').style.display = 'none';
@@ -904,14 +984,6 @@
       this.domHud.style.display = 'block';
 
       this.running = true;
-    }
-
-    _updateBotCountDisplay() {
-      if (this.domBotCount) {
-        this.domBotCount.textContent = this.botCount + ' / ' + MAX_BOTS;
-      }
-      const addBtn = document.getElementById('btn-add-bot');
-      if (addBtn) addBtn.disabled = this.botCount >= MAX_BOTS;
     }
 
     // ── Waiting room helpers ───────────────────────────────────────────────
@@ -926,12 +998,15 @@
         codeEl.textContent = code;
       }
 
-      document.getElementById('wr-settings-card').style.display = isHost ? 'flex' : 'none';
+      // Settings card visible to all; controls disabled for non-host
+      document.getElementById('wr-settings-card').style.display = 'flex';
       document.getElementById('btn-start-game').style.display   = isHost ? 'block' : 'none';
       document.getElementById('wr-waiting-msg').style.display   = isHost ? 'none' : 'block';
 
-      // Disable size buttons for non-host clients (read-only view)
-      document.querySelectorAll('.size-btn').forEach(b => { b.disabled = !isHost; });
+      // Disable controls for non-host clients (read-only view)
+      const hostOnly = ['wr-bot-dec', 'wr-bot-inc'];
+      document.querySelectorAll('.size-btn, .mode-btn').forEach(b => { b.disabled = !isHost; });
+      hostOnly.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !isHost; });
 
       this._updateWaitingRoomUI();
       this._updateWaitingSettings();
@@ -944,28 +1019,40 @@
       const hostId    = this.hostId || this.myId;
       const hostShort = hostId.slice(0, 8).toUpperCase();
       const hostIsMe  = hostId === this.myId;
+      const isTeam    = this.roomSettings.gameMode === 'team';
+
+      const teamLabel = (idx) => isTeam ? (idx % 2 === 0 ? ' <span style="color:#44aaff">[A隊]</span>' : ' <span style="color:#ff4433">[B隊]</span>') : '';
 
       const entries = [
         `<div class="player-entry is-host${hostIsMe ? ' is-self' : ''}">` +
-        `🎮 ${hostShort}` +
-        `${hostIsMe ? '（你·房主）' : '（房主）'}</div>`,
+        `🎮 ${hostShort}${hostIsMe ? '（你·房主）' : '（房主）'}${teamLabel(0)}</div>`,
       ];
 
-      for (const pid of this.waitingPeerIds) {
+      for (let i = 0; i < this.waitingPeerIds.length; i++) {
+        const pid   = this.waitingPeerIds[i];
         const short = pid.slice(0, 8).toUpperCase();
         const isMe  = pid === this.myId;
         entries.push(
           `<div class="player-entry${isMe ? ' is-self' : ''}">` +
-          `👤 ${short}${isMe ? '（你）' : ''}</div>`
+          `👤 ${short}${isMe ? '（你）' : ''}${teamLabel(i + 1)}</div>`
+        );
+      }
+
+      // Show pending bot slots
+      const numHumans = 1 + this.waitingPeerIds.length;
+      for (let i = 0; i < (this.roomSettings.botCount || 0); i++) {
+        entries.push(
+          `<div class="player-entry" style="color:#ff9922;border-color:rgba(255,153,34,0.2)">` +
+          `🤖 Bot ${i + 1}${teamLabel(numHumans + i)}</div>`
         );
       }
 
       el.innerHTML = entries.join('');
 
-      // Update start button label with player count (host only)
+      // Update start button label with total count (host only)
       const startBtn = document.getElementById('btn-start-game');
       if (startBtn) {
-        const total = 1 + this.waitingPeerIds.length;
+        const total = numHumans + (this.roomSettings.botCount || 0);
         startBtn.textContent = `▶ 開始遊戲（${total} 人）`;
       }
     }
@@ -974,6 +1061,21 @@
       document.querySelectorAll('.size-btn').forEach(b => {
         b.classList.toggle('active', b.dataset.size === this.roomSettings.mapSize);
       });
+      document.querySelectorAll('.mode-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.mode === (this.roomSettings.gameMode || 'ffa'));
+      });
+
+      // Update bot count display
+      const botDisplay = document.getElementById('wr-bot-display');
+      if (botDisplay) botDisplay.textContent = this.roomSettings.botCount || 0;
+
+      // Update bot +/− button states (host side)
+      const humans  = 1 + this.waitingPeerIds.length;
+      const maxBots = MAX_PLAYERS - humans;
+      const decBtn  = document.getElementById('wr-bot-dec');
+      const incBtn  = document.getElementById('wr-bot-inc');
+      if (decBtn) decBtn.disabled = !this.isHost || (this.roomSettings.botCount || 0) <= 0;
+      if (incBtn) incBtn.disabled = !this.isHost || (this.roomSettings.botCount || 0) >= maxBots;
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1128,6 +1230,8 @@
       const ray = castRay(this.map, me.x, me.y, me.angle);
       for (const [id, p] of this.players) {
         if (id === this.myId || p.dead) continue;
+        // Skip friendly fire in team mode
+        if (this.roomSettings.gameMode === 'team' && p.team === me.team) continue;
         // Project player onto ray direction
         const dx = p.x - me.x, dy = p.y - me.y;
         const cos = Math.cos(me.angle), sin = Math.sin(me.angle);
@@ -1250,8 +1354,7 @@
     }
 
     // ── Bot: Add ───────────────────────────────────────────────────────────
-    _addBot() {
-      if (this.botCount >= MAX_BOTS) return;
+    _addBot(broadcast = true) {
       const botId   = 'bot-' + this.botCount;
       this.botCount += 1;
       const spIdx   = (this.players.size) % this.map.spawns.length;
@@ -1263,9 +1366,10 @@
       bot.botTimer     = 0;            // time until next wander-target pick
       bot.botShootTimer = BOT_SHOOT_CD * this.botRng(); // stagger initial shot
       this.players.set(botId, bot);
-      // Tell all connected peers about this new bot
-      this._broadcast({ type: 'playerJoin', id: botId });
-      this._updateBotCountDisplay();
+      if (broadcast) {
+        // Tell all connected peers about this new bot (in-game late-add scenario)
+        this._broadcast({ type: 'playerJoin', id: botId });
+      }
     }
 
     // ── Bot: Update (host only) ────────────────────────────────────────────
@@ -1275,10 +1379,12 @@
       for (const [id, bot] of this.players) {
         if (!bot.isBot || bot.dead) continue;
 
-        // ── 1. Find nearest living human player ──────────────────────────
+        // ── 1. Find nearest living enemy player ──────────────────────────
         let nearestDist = Infinity, nearestTarget = null;
         for (const [pid, p] of this.players) {
           if (p.isBot || p.dead) continue;
+          // In team mode, bots only target enemies (different team)
+          if (this.roomSettings.gameMode === 'team' && p.team === bot.team) continue;
           const d2 = dist2(bot.x, bot.y, p.x, p.y);
           if (d2 < nearestDist) { nearestDist = d2; nearestTarget = p; }
         }
@@ -1350,10 +1456,11 @@
       playShot(false);
       this._spawnBullet(bot.x, bot.y, bot.angle, false);
 
-      // Hit detection against human players
+      // Hit detection against enemy players (skip friendly fire in team mode)
       const ray = castRay(this.map, bot.x, bot.y, bot.angle);
       for (const [pid, p] of this.players) {
         if (p.isBot || p.dead) continue;
+        if (this.roomSettings.gameMode === 'team' && p.team === bot.team) continue;
         const dx  = p.x - bot.x, dy = p.y - bot.y;
         const cos = Math.cos(bot.angle), sin = Math.sin(bot.angle);
         const proj = dx * cos + dy * sin;
@@ -1405,6 +1512,10 @@
         let col;
         if (p.dead)        col = C.DEAD_P;
         else if (isSelf)   col = C.SELF;
+        else if (this.roomSettings.gameMode === 'team') {
+          const myTeam = me ? (me.team ?? 0) : 0;
+          col = (p.team === myTeam) ? C.TEAM_A : C.TEAM_B;
+        }
         else if (p.isBot)  col = C.BOT;
         else               col = C.ENEMY;
 
@@ -1699,6 +1810,7 @@
             hp: bot.hp,
             dead: bot.dead,
             isBot: true,
+            team: bot.team,
           });
         }
       }
