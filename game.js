@@ -607,20 +607,35 @@
       createBtn.addEventListener('click', () => {
         createBtn.disabled = true;
         statusEl.textContent = '正在建立房間…';
-        this._initPeer(null, peerId => {
-          this.isHost = true;
-          this.hostId = peerId;
-          const code = peerId.slice(0, 8).toUpperCase();
-          this._showWaitingRoom(true, code);
-        }, err => {
-          createBtn.disabled = false;
-          statusEl.textContent = '建立失敗：' + err;
-        });
+        // Generate a short room code and use it as the peer ID so joiners can
+        // connect with the code directly (avoids UUID truncation mismatch).
+        const tryCreate = () => {
+          const chars = '0123456789abcdefghijklmnopqrstuvwxyz';
+          const arr = new Uint8Array(6);
+          crypto.getRandomValues(arr);
+          const roomCode = Array.from(arr, b => chars[b % 36]).join('').toUpperCase();
+          this._initPeer(roomCode.toLowerCase(), peerId => {
+            this.isHost = true;
+            this.hostId = peerId;
+            this._showWaitingRoom(true, roomCode);
+          }, err => {
+            if (err === 'unavailable-id') {
+              // Rare ID collision – retry with a new code
+              if (this.peer) { this.peer.destroy(); this.peer = null; }
+              tryCreate();
+            } else {
+              createBtn.disabled = false;
+              statusEl.textContent = '建立失敗：' + err;
+            }
+          });
+        };
+        tryCreate();
       });
 
       joinBtn.addEventListener('click', () => {
         const code = joinInput.value.trim().toUpperCase();
         if (code.length < 6) { statusEl.textContent = '請輸入正確代碼'; return; }
+        joinInput.blur(); // dismiss mobile soft keyboard
         joinBtn.disabled = true;
         statusEl.textContent = '正在連線…';
         this._initPeer(null, () => {
@@ -1012,9 +1027,9 @@
 
       this._redrawMap();
 
-      // Show room code in HUD corner
-      const code = this.myId.slice(0, 8).toUpperCase();
-      this.domRoomCode.textContent = '房間: ' + code;
+      // Show room code in HUD corner (host ID is the room code)
+      const roomCodeForHud = (this.hostId || this.myId).toUpperCase();
+      this.domRoomCode.textContent = '房間: ' + roomCodeForHud;
       this.domRoomCode.classList.add('show');
 
       // Hide lobby and waiting room, show canvas + HUD
