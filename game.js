@@ -968,9 +968,12 @@
       p.isBot = !!data.isBot;
       p.team = data.team ?? p.team ?? 0;
       p.respawnAt = data.respawnAt || 0;
-      p.ammo = Number.isFinite(data.ammo) ? clamp(data.ammo, 0, MAG_SIZE) : (Number.isFinite(p.ammo) ? p.ammo : MAG_SIZE);
+      if (Number.isFinite(data.ammo)) p.ammo = clamp(data.ammo, 0, MAG_SIZE);
+      else if (!Number.isFinite(p.ammo)) p.ammo = MAG_SIZE;
       p.reloading = !!data.reloading;
-      p.reloadUntil = Number.isFinite(data.reloadUntil) ? data.reloadUntil : (p.reloadUntil || 0);
+      p.reloadUntil = Number.isFinite(data.reloadUntil)
+        ? data.reloadUntil
+        : (Number.isFinite(p.reloadUntil) ? p.reloadUntil : 0);
       if (p.isBot) {
         p.botState = p.botState || 'wander';
         p.botTarget = p.botTarget || null;
@@ -1570,7 +1573,11 @@
 
     _refreshReloadState(p, now = Date.now()) {
       if (!p) return;
-      if (p.reloading && now >= (p.reloadUntil || 0)) {
+      if (p.reloading && !Number.isFinite(p.reloadUntil)) {
+        p.reloadUntil = now + RELOAD_MS;
+        return;
+      }
+      if (p.reloading && now >= p.reloadUntil) {
         p.reloading = false;
         p.reloadUntil = 0;
         p.ammo = MAG_SIZE;
