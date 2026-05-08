@@ -58,6 +58,7 @@
   const MAX_HP    = 100;
   const RESPAWN_MS = RESPAWN_S * 1000;
   const NET_MAX_STEP = P_SPD * (SYNC_MS / 1000) * 2.4;
+  const NET_STEP_TOLERANCE = 1.75;
   const SHOT_POS_EPS = 56;
 
   // ── Joystick constants ────────────────────────────────────────────────
@@ -917,7 +918,7 @@
     }
 
     _spawnPlayerState(id, spawnIdx, team, extras = {}) {
-      const safeIdx = this.map.spawns.length ? (spawnIdx % this.map.spawns.length + this.map.spawns.length) % this.map.spawns.length : 0;
+      const safeIdx = this.map.spawns.length ? (spawnIdx % this.map.spawns.length) : 0;
       const sp = this.map.spawns[safeIdx] || { x: TS * 1.5, y: TS * 1.5 };
       const p = mkPlayer(id, sp.x, sp.y);
       p.team = team ?? 0;
@@ -1043,7 +1044,7 @@
       const now = Date.now();
       this.lastNetStateAt.set(fromId, now);
       const elapsed = clamp((now - prevAt) / 1000, SYNC_MS / 1000, 0.25);
-      const maxStep = Math.max(NET_MAX_STEP, P_SPD * elapsed * 1.75);
+      const maxStep = Math.max(NET_MAX_STEP, P_SPD * elapsed * NET_STEP_TOLERANCE);
       let dx = Number.isFinite(msg.x) ? msg.x - p.x : 0;
       let dy = Number.isFinite(msg.y) ? msg.y - p.y : 0;
       const dist = Math.hypot(dx, dy);
