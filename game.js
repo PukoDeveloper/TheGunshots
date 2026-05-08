@@ -758,8 +758,7 @@
         this.mySpawnIdx = spawnAssignments[this.myId] ?? 0;
 
         // Build the authoritative player roster before the match starts
-        for (const timer of this.respawnTimers.values()) clearTimeout(timer);
-        this.respawnTimers.clear();
+        for (const id of [...this.respawnTimers.keys()]) this._clearRespawnTimer(id);
         this.lastNetStateAt.clear();
         this.players.clear();
         for (const pid of [this.myId, ...this.waitingPeerIds]) {
@@ -837,11 +836,7 @@
       conn.on('data', data => this._onMsg(pid, data));
       conn.on('close', () => {
         this.conns.delete(pid);
-        const timer = this.respawnTimers.get(pid);
-        if (timer) {
-          clearTimeout(timer);
-          this.respawnTimers.delete(pid);
-        }
+        this._clearRespawnTimer(pid);
         this.players.delete(pid);
         if (!this.running) {
           this.waitingPeerIds = this.waitingPeerIds.filter(id => id !== pid);
@@ -894,9 +889,17 @@
       for (const [id] of this.players) this._broadcastPlayerState(id);
     }
 
+    _clearRespawnTimer(id) {
+      const timer = this.respawnTimers.get(id);
+      if (timer) clearTimeout(timer);
+      this.respawnTimers.delete(id);
+    }
+
     _isValidPlayerPosition(x, y) {
       if (!this.map) return false;
       if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+      if (x < P_RAD || y < P_RAD) return false;
+      if (x > MW * TS - P_RAD || y > MH * TS - P_RAD) return false;
       return !this._solid(x, y);
     }
 
@@ -943,8 +946,9 @@
         p = mkPlayer(data.id, fallbackSpawn.x, fallbackSpawn.y);
         this.players.set(data.id, p);
       }
-      const nextX = this._isValidPlayerPosition(data.x, data.y) ? data.x : p.x;
-      const nextY = this._isValidPlayerPosition(data.x, data.y) ? data.y : p.y;
+      const validPos = this._isValidPlayerPosition(data.x, data.y);
+      const nextX = validPos ? data.x : p.x;
+      const nextY = validPos ? data.y : p.y;
       p.x = nextX;
       p.y = nextY;
       if (Number.isFinite(data.angle)) p.angle = data.angle;
@@ -989,8 +993,7 @@
 
     _scheduleRespawn(id) {
       if (!this.isHost) return;
-      const existing = this.respawnTimers.get(id);
-      if (existing) clearTimeout(existing);
+      this._clearRespawnTimer(id);
       const p = this.players.get(id);
       if (!p) return;
       p.respawnAt = Date.now() + RESPAWN_MS;
@@ -1043,7 +1046,9 @@
       const prevAt = this.lastNetStateAt.get(fromId) || Date.now();
       const now = Date.now();
       this.lastNetStateAt.set(fromId, now);
-      const elapsed = clamp((now - prevAt) / 1000, SYNC_MS / 1000, 0.25);
+      const minElapsed = Math.min(SYNC_MS / 1000, 0.25);
+      const maxElapsed = Math.max(SYNC_MS / 1000, 0.25);
+      const elapsed = clamp((now - prevAt) / 1000, minElapsed, maxElapsed);
       const maxStep = Math.max(NET_MAX_STEP, P_SPD * elapsed * NET_STEP_TOLERANCE);
       let dx = Number.isFinite(msg.x) ? msg.x - p.x : 0;
       let dy = Number.isFinite(msg.y) ? msg.y - p.y : 0;
@@ -1194,7 +1199,10 @@
           break;
 
         case 'playerJoin':
-          if (msg.player) this._upsertPlayerFromSnapshot(msg.player);
+          if (msg.player && typeof msg.player.id === 'string' &&
+              Number.isFinite(msg.player.x) && Number.isFinite(msg.player.y)) {
+            this._upsertPlayerFromSnapshot(msg.player);
+          }
           break;
 
         case 'state':
