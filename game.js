@@ -56,6 +56,10 @@
   const SOUND_TIP_OFFSET = 6;     // inward offset of the arc's direction dot (px)
   const RESPAWN_S = 3.5;           // respawn delay (s)
   const MAX_HP    = 100;
+  const RESPAWN_MS = RESPAWN_S * 1000;
+  const NET_MAX_STEP = P_SPD * (SYNC_MS / 1000) * 2.4;
+  const NET_STEP_TOLERANCE = 1.75;
+  const SHOT_POS_EPS = 56;
 
   // ── Joystick constants ────────────────────────────────────────────────
   const JOY_DEAD_ZONE = 8;         // minimum joystick offset to register input (px)
@@ -324,6 +328,8 @@
       this.soundInds = [];         // {wx,wy,ttl,type}   sound-arc indicators (world-space origin)
       this.running  = false;
       this.syncTimer = 0;
+      this.lastNetStateAt = new Map();
+      this.respawnTimers  = new Map();
 
       // ── Bot state ──────────────────────────────────────────────────────
       this.botCount = 0;
@@ -751,13 +757,25 @@
         }
         this.mySpawnIdx = spawnAssignments[this.myId] ?? 0;
 
+        // Build the authoritative player roster before the match starts
+        for (const id of [...this.respawnTimers.keys()]) this._clearRespawnTimer(id);
+        this.lastNetStateAt.clear();
+        this.players.clear();
+        for (const pid of [this.myId, ...this.waitingPeerIds]) {
+          this._spawnPlayerState(
+            pid,
+            spawnAssignments[pid] ?? 0,
+            (this.roomSettings.gameMode === 'team') ? (teamAssignments[pid] ?? 0) : 0
+          );
+        }
+
         // Spawn bots with their assigned positions (don't broadcast yet)
         this.botCount = 0;
         for (let i = 0; i < this.roomSettings.botCount; i++) {
           this._addBot(false, spawnAssignments['bot-' + i]);
         }
 
-        // Apply teams to local players (host + bots)
+        // Apply teams to all authoritative players
         for (const [pid, p] of this.players) {
           p.team = (this.roomSettings.gameMode === 'team') ? (teamAssignments[pid] ?? 0) : 0;
         }
@@ -772,10 +790,7 @@
             gameMode: this.roomSettings.gameMode,
             teams: teamAssignments,
             teamSpawnIdxs: this.teamSpawnIdxs,
-            players: [...this.players.entries()].map(([id, p]) => ({
-              id, x: p.x, y: p.y, angle: p.angle, hp: p.hp,
-              isBot: p.isBot || false, team: p.team ?? 0,
-            })),
+            players: [...this.players.entries()].map(([id, p]) => this._serializePlayer(id, p)),
           });
         }
         this._startGame();
@@ -821,6 +836,7 @@
       conn.on('data', data => this._onMsg(pid, data));
       conn.on('close', () => {
         this.conns.delete(pid);
+        this._clearRespawnTimer(pid);
         this.players.delete(pid);
         if (!this.running) {
           this.waitingPeerIds = this.waitingPeerIds.filter(id => id !== pid);
@@ -828,6 +844,8 @@
             this._broadcast({ type: 'playerListUpdate', peerIds: [...this.waitingPeerIds] });
           }
           this._updateWaitingRoomUI();
+        } else if (this.isHost) {
+          this._broadcast({ type: 'playerLeave', id: pid });
         }
       });
     }
@@ -845,14 +863,248 @@
       if (conn && conn.open) { try { conn.send(msg); } catch (_) {} }
     }
 
+    _serializePlayer(id, p) {
+      return {
+        id,
+        x: p.x,
+        y: p.y,
+        angle: p.angle,
+        hp: p.hp,
+        dead: !!p.dead,
+        isBot: !!p.isBot,
+        team: p.team ?? 0,
+        respawnAt: p.respawnAt || 0,
+      };
+    }
+
+    _broadcastPlayerState(id, exceptId) {
+      if (!this.isHost) return;
+      const p = this.players.get(id);
+      if (!p) return;
+      this._broadcast({ type: 'state', ...this._serializePlayer(id, p) }, exceptId);
+    }
+
+    _broadcastAllPlayerStates() {
+      if (!this.isHost) return;
+      for (const [id] of this.players) this._broadcastPlayerState(id);
+    }
+
+    _clearRespawnTimer(id) {
+      const timer = this.respawnTimers.get(id);
+      if (timer) clearTimeout(timer);
+      this.respawnTimers.delete(id);
+    }
+
+    _isValidPlayerPosition(x, y) {
+      if (!this.map) return false;
+      if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+      if (x < P_RAD || y < P_RAD) return false;
+      if (x > MW * TS - P_RAD || y > MH * TS - P_RAD) return false;
+      return !this._solid(x, y);
+    }
+
+    _pickLateJoinTeam() {
+      if (this.roomSettings.gameMode !== 'team') return 0;
+      const counts = [0, 0];
+      for (const [, p] of this.players) {
+        counts[p.team ?? 0] = (counts[p.team ?? 0] || 0) + 1;
+      }
+      return counts[0] <= counts[1] ? 0 : 1;
+    }
+
+    _pickSpawnIdxForTeam(team) {
+      if (!this.map || !this.map.spawns.length) return 0;
+      if (this.roomSettings.gameMode === 'team' && this.teamSpawnIdxs) {
+        return this.teamSpawnIdxs[team ?? 0] ?? 0;
+      }
+      return Math.floor(Math.random() * this.map.spawns.length);
+    }
+
+    _spawnPlayerState(id, spawnIdx, team, extras = {}) {
+      const safeIdx = this.map.spawns.length ? (spawnIdx % this.map.spawns.length) : 0;
+      const sp = this.map.spawns[safeIdx] || { x: TS * 1.5, y: TS * 1.5 };
+      const p = mkPlayer(id, sp.x, sp.y);
+      p.team = team ?? 0;
+      p.isBot = !!extras.isBot;
+      p.respawnAt = 0;
+      if (p.isBot) {
+        p.botState = 'wander';
+        p.botTarget = null;
+        p.botTimer = 0;
+        p.botShootTimer = BOT_SHOOT_CD * this.botRng();
+      }
+      this.players.set(id, p);
+      if (!p.isBot) this.lastNetStateAt.set(id, Date.now());
+      return p;
+    }
+
+    _upsertPlayerFromSnapshot(data) {
+      let p = this.players.get(data.id);
+      if (!p) {
+        const fallbackTeam = data.team ?? 0;
+        const fallbackSpawn = this.map ? this.map.spawns[this._pickSpawnIdxForTeam(fallbackTeam)] : { x: TS * 1.5, y: TS * 1.5 };
+        p = mkPlayer(data.id, fallbackSpawn.x, fallbackSpawn.y);
+        this.players.set(data.id, p);
+      }
+      const validPos = this._isValidPlayerPosition(data.x, data.y);
+      const nextX = validPos ? data.x : p.x;
+      const nextY = validPos ? data.y : p.y;
+      p.x = nextX;
+      p.y = nextY;
+      if (Number.isFinite(data.angle)) p.angle = data.angle;
+      if (Number.isFinite(data.hp)) p.hp = clamp(data.hp, 0, MAX_HP);
+      p.dead = !!data.dead;
+      p.isBot = !!data.isBot;
+      p.team = data.team ?? p.team ?? 0;
+      p.respawnAt = data.respawnAt || 0;
+      if (p.isBot) {
+        p.botState = p.botState || 'wander';
+        p.botTarget = p.botTarget || null;
+        p.botTimer = Number.isFinite(p.botTimer) ? p.botTimer : 0;
+        p.botShootTimer = Number.isFinite(p.botShootTimer) ? p.botShootTimer : BOT_SHOOT_CD * this.botRng();
+      }
+      return p;
+    }
+
+    _isFriendlyFire(attacker, target) {
+      return this.roomSettings.gameMode === 'team' &&
+        (attacker.team ?? 0) === (target.team ?? 0);
+    }
+
+    _findShotTarget(shooter) {
+      const ray = castRay(this.map, shooter.x, shooter.y, shooter.angle);
+      let bestId = null;
+      let bestProj = ray.dist + P_RAD;
+      for (const [id, p] of this.players) {
+        if (id === shooter.id || p.dead) continue;
+        if (shooter.isBot && p.isBot) continue;
+        if (this._isFriendlyFire(shooter, p)) continue;
+        const dx = p.x - shooter.x, dy = p.y - shooter.y;
+        const cos = Math.cos(shooter.angle), sin = Math.sin(shooter.angle);
+        const proj = dx * cos + dy * sin;
+        const perp = Math.abs(dx * sin - dy * cos);
+        if (proj > 0 && proj <= bestProj && perp <= P_RAD * 1.4) {
+          bestProj = proj;
+          bestId = id;
+        }
+      }
+      return bestId;
+    }
+
+    _scheduleRespawn(id) {
+      if (!this.isHost) return;
+      this._clearRespawnTimer(id);
+      const p = this.players.get(id);
+      if (!p) return;
+      p.respawnAt = Date.now() + RESPAWN_MS;
+      this._broadcastPlayerState(id);
+      const timer = setTimeout(() => {
+        this.respawnTimers.delete(id);
+        this._respawnPlayer(id);
+      }, RESPAWN_MS);
+      this.respawnTimers.set(id, timer);
+    }
+
+    _respawnPlayer(id) {
+      const p = this.players.get(id);
+      if (!p || !p.dead || !this.map) return;
+      const sp = this.map.spawns[this._pickRespawnIdx(p)] || { x: TS * 1.5, y: TS * 1.5 };
+      p.x = sp.x;
+      p.y = sp.y;
+      p.hp = MAX_HP;
+      p.dead = false;
+      p.respawnAt = 0;
+      if (p.isBot) {
+        p.botState = 'wander';
+        p.botTarget = null;
+        p.botTimer = 0;
+        p.botShootTimer = BOT_SHOOT_CD * this.botRng();
+      }
+      this._broadcast({ type: 'respawn', player: this._serializePlayer(id, p) });
+    }
+
+    _applyDamage(targetId, dmg, attackerId) {
+      if (!this.isHost) return false;
+      const target = this.players.get(targetId);
+      if (!target || target.dead) return false;
+      const attacker = attackerId ? this.players.get(attackerId) : null;
+      if (attacker && this._isFriendlyFire(attacker, target)) return false;
+      target.hp = Math.max(0, target.hp - dmg);
+      if (target.hp <= 0) {
+        target.hp = 0;
+        target.dead = true;
+        this._scheduleRespawn(targetId);
+      } else {
+        this._broadcastPlayerState(targetId);
+      }
+      return true;
+    }
+
+    _handleStateRequest(fromId, msg) {
+      const p = this.players.get(fromId);
+      if (!p || p.dead) return;
+      const prevAt = this.lastNetStateAt.get(fromId) || Date.now();
+      const now = Date.now();
+      this.lastNetStateAt.set(fromId, now);
+      const minElapsed = Math.min(SYNC_MS / 1000, 0.25);
+      const maxElapsed = Math.max(SYNC_MS / 1000, 0.25);
+      const elapsed = clamp((now - prevAt) / 1000, minElapsed, maxElapsed);
+      const maxStep = Math.max(NET_MAX_STEP, P_SPD * elapsed * NET_STEP_TOLERANCE);
+      let dx = Number.isFinite(msg.x) ? msg.x - p.x : 0;
+      let dy = Number.isFinite(msg.y) ? msg.y - p.y : 0;
+      const dist = Math.hypot(dx, dy);
+      if (dist > maxStep && dist > 0) {
+        const s = maxStep / dist;
+        dx *= s;
+        dy *= s;
+      }
+      this._movePlayer(p, dx, dy);
+      if (Number.isFinite(msg.angle)) p.angle = msg.angle;
+      this._broadcastPlayerState(fromId);
+    }
+
+    _handleShootRequest(fromId, msg) {
+      const shooter = this.players.get(fromId);
+      if (!shooter || shooter.dead) return;
+      if (Number.isFinite(msg.x) && Number.isFinite(msg.y)) {
+        const drift = Math.hypot(msg.x - shooter.x, msg.y - shooter.y);
+        if (drift > SHOT_POS_EPS) return;
+      }
+      if (Number.isFinite(msg.angle)) shooter.angle = msg.angle;
+      const targetId = this._findShotTarget(shooter);
+      if (targetId) this._applyDamage(targetId, MAX_HP, fromId);
+      this._broadcast({
+        type: 'shot',
+        id: fromId,
+        x: shooter.x,
+        y: shooter.y,
+        angle: shooter.angle,
+      });
+    }
+
+    _handleDoorRequest(fromId, msg) {
+      const p = this.players.get(fromId);
+      if (!p || p.dead) return;
+      const door = this.map.doors.find(d => d.x === msg.x && d.y === msg.y);
+      if (!door) return;
+      const dx = door.x * TS + TS / 2 - p.x;
+      const dy = door.y * TS + TS / 2 - p.y;
+      if (dx * dx + dy * dy > DOOR_D * DOOR_D) return;
+      door.open = !door.open;
+      this._redrawMap();
+      this._broadcast({ type: 'door', x: door.x, y: door.y, open: door.open });
+    }
+
     _onMsg(fromId, msg) {
       switch (msg.type) {
         case 'hello':
           // Client joined: send map seed + current players (or waiting room state)
           if (this.isHost) {
             if (this.running) {
-              // Late joiner: game already in progress – send map info immediately
-              const spawnIdx = Math.floor(Math.random() * this.map.spawns.length);
+              // Late joiner: spawn and sync them from the authoritative host state
+              const team = this._pickLateJoinTeam();
+              const spawnIdx = this._pickSpawnIdxForTeam(team);
+              this._spawnPlayerState(fromId, spawnIdx, team);
               this._sendTo(fromId, {
                 type: 'welcome',
                 seed: this.map.seed,
@@ -861,13 +1113,10 @@
                 gameMode: this.roomSettings.gameMode,
                 teams: Object.fromEntries([...this.players.entries()].map(([id, p]) => [id, p.team ?? 0])),
                 teamSpawnIdxs: this.teamSpawnIdxs,
-                players: [...this.players.entries()].map(([id, p]) => ({
-                  id, x: p.x, y: p.y, angle: p.angle, hp: p.hp,
-                  isBot: p.isBot || false, team: p.team ?? 0,
-                })),
+                players: [...this.players.entries()].map(([id, p]) => this._serializePlayer(id, p)),
               });
               // Tell existing players about the newcomer
-              this._broadcast({ type: 'playerJoin', id: fromId }, fromId);
+              this._broadcast({ type: 'playerJoin', player: this._serializePlayer(fromId, this.players.get(fromId)) }, fromId);
             } else {
               // Waiting room: enforce max player limit
               const totalPlayers = 1 + this.waitingPeerIds.length + this.roomSettings.botCount;
@@ -938,51 +1187,38 @@
           const sp = this.map.spawns[msg.spawnIdx % this.map.spawns.length];
           const mePlayer = mkPlayer(this.myId, sp.x, sp.y);
           if (msg.teams && msg.teams[this.myId] !== undefined) mePlayer.team = msg.teams[this.myId];
+          mePlayer.respawnAt = 0;
           this.players.set(this.myId, mePlayer);
           // Add existing players (including bots spawned by host)
           for (const pd of msg.players) {
             if (pd.id !== this.myId) {
-              const existing = mkPlayer(pd.id, pd.x, pd.y);
-              if (pd.isBot) existing.isBot = true;
-              if (pd.team !== undefined) existing.team = pd.team;
-              this.players.set(pd.id, existing);
+              this._upsertPlayerFromSnapshot(pd);
             }
           }
           this._startGame();
           break;
 
         case 'playerJoin':
-          if (!this.players.has(msg.id)) {
-            const spIdx = this.players.size % this.map.spawns.length;
-            const s = this.map.spawns[spIdx];
-            const joined = mkPlayer(msg.id, s.x, s.y);
-            if (msg.id.startsWith('bot-')) joined.isBot = true;
-            this.players.set(msg.id, joined);
+          if (msg.player && typeof msg.player.id === 'string' &&
+              Number.isFinite(msg.player.x) && Number.isFinite(msg.player.y)) {
+            this._upsertPlayerFromSnapshot(msg.player);
           }
           break;
 
         case 'state':
-          if (msg.id !== this.myId) {
-            // Host relays state updates from clients to all other clients
-            if (this.isHost) this._broadcast(msg, fromId);
-            let p = this.players.get(msg.id);
-            if (!p) { p = mkPlayer(msg.id, msg.x, msg.y); this.players.set(msg.id, p); }
-            // Detect footstep movement and push a sound indicator if within range
-            if (!msg.dead && !p.dead) {
-              const moved = Math.hypot(msg.x - p.x, msg.y - p.y);
+          if (this.isHost) break;
+          {
+            const existing = this.players.get(msg.id);
+            if (msg.id !== this.myId && existing && !msg.dead && !existing.dead) {
+              const moved = Math.hypot(msg.x - existing.x, msg.y - existing.y);
               if (moved > 2) this._pushSoundInd(msg.x, msg.y, 'step');
             }
-            p.x = msg.x; p.y = msg.y; p.angle = msg.angle; p.hp = msg.hp;
-            p.dead = msg.dead;
-            if (msg.isBot) p.isBot = true;
-            if (msg.team !== undefined) p.team = msg.team;
+            this._upsertPlayerFromSnapshot(msg);
           }
           break;
 
         case 'shot':
           if (msg.id !== this.myId) {
-            // Host relays shot events from clients to all other clients
-            if (this.isHost) this._broadcast(msg, fromId);
             playShot(false);
             this.shotInds.push({ wx: msg.x, wy: msg.y, angle: msg.angle, ttl: IND_TTL });
             // Visual bullet trail from the shooter's perspective
@@ -992,37 +1228,30 @@
           }
           break;
 
-        case 'hit':
-          if (msg.target === this.myId) {
-            const me = this.players.get(this.myId);
-            if (me && !me.dead) {
-              me.hp = Math.max(0, me.hp - msg.dmg);
-              if (me.hp <= 0) this._die();
-            }
-          } else if (this.isHost) {
-            // Host applies damage to bots on behalf of remote players
-            const target = this.players.get(msg.target);
-            if (target && target.isBot) {
-              this._applyBotDamage(msg.target, msg.dmg);
-            }
-          }
+        case 'stateRequest':
+          if (this.isHost) this._handleStateRequest(fromId, msg);
+          break;
+
+        case 'shootRequest':
+          if (this.isHost) this._handleShootRequest(fromId, msg);
+          break;
+
+        case 'doorRequest':
+          if (this.isHost) this._handleDoorRequest(fromId, msg);
+          break;
+
+        case 'playerLeave':
+          this.players.delete(msg.id);
           break;
 
         case 'door':
-          // Host relays door changes from clients to all other clients
-          if (this.isHost) this._broadcast(msg, fromId);
           const d = this.map.doors.find(d => d.x === msg.x && d.y === msg.y);
           if (d) d.open = msg.open;
           this._redrawMap();
           break;
 
         case 'respawn':
-          if (msg.id !== this.myId) {
-            // Host relays respawn events from clients to all other clients
-            if (this.isHost) this._broadcast(msg, fromId);
-            const p2 = this.players.get(msg.id);
-            if (p2) { p2.x = msg.x; p2.y = msg.y; p2.hp = MAX_HP; p2.dead = false; }
-          }
+          if (!this.isHost && msg.player) this._upsertPlayerFromSnapshot(msg.player);
           break;
       }
     }
@@ -1301,55 +1530,22 @@
       playShot(true);
       this._spawnBullet(me.x, me.y, me.angle, true);
 
-      // Raycast for hit detection
-      const ray = castRay(this.map, me.x, me.y, me.angle);
-      for (const [id, p] of this.players) {
-        if (id === this.myId || p.dead) continue;
-        // Skip friendly fire in team mode
-        if (this.roomSettings.gameMode === 'team' && p.team === me.team) continue;
-        // Project player onto ray direction
-        const dx = p.x - me.x, dy = p.y - me.y;
-        const cos = Math.cos(me.angle), sin = Math.sin(me.angle);
-        const proj  = dx * cos + dy * sin;        // along ray
-        const perp  = Math.abs(dx * sin - dy * cos); // perpendicular distance
-        if (proj > 0 && proj <= ray.dist + P_RAD && perp <= P_RAD * 1.4) {
-          const dmg = MAX_HP;
-          if (p.isBot) {
-            if (this.isHost) {
-              // Host applies bot damage directly
-              this._applyBotDamage(id, dmg);
-            } else {
-              // Non-host: ask the host to apply the damage
-              this._broadcast({ type: 'hit', id: this.myId, target: id, dmg });
-            }
-          } else {
-            this._broadcast({ type: 'hit', target: id, dmg });
-          }
-          break;
-        }
+      if (this.isHost) {
+        const targetId = this._findShotTarget(me);
+        if (targetId) this._applyDamage(targetId, MAX_HP, this.myId);
+        this._broadcast({ type: 'shot', id: this.myId, x: me.x, y: me.y, angle: me.angle });
+      } else {
+        this._sendTo(this.hostId, {
+          type: 'shootRequest',
+          x: me.x,
+          y: me.y,
+          angle: me.angle,
+        });
       }
-
-      // Broadcast shot event
-      this._broadcast({ type: 'shot', id: this.myId, x: me.x, y: me.y, angle: me.angle });
     }
 
     _applyBotDamage(botId, dmg) {
-      const bot = this.players.get(botId);
-      if (!bot || bot.dead) return;
-      bot.hp = Math.max(0, bot.hp - dmg);
-      if (bot.hp <= 0) {
-        bot.dead = true;
-        // Respawn bot after delay
-        setTimeout(() => {
-          if (!this.players.has(botId)) return;
-          const sp = this.map.spawns[this._pickRespawnIdx(bot)];
-          bot.x = sp.x; bot.y = sp.y;
-          bot.hp = MAX_HP;
-          bot.dead = false;
-          bot.botState = 'wander';
-          bot.botTarget = null;
-        }, RESPAWN_S * 1000);
-      }
+      this._applyDamage(botId, dmg, null);
     }
 
     _spawnBullet(ox, oy, angle, local) {
@@ -1388,19 +1584,19 @@
         if (dd < closestDist) { closestDist = dd; closest = d; }
       }
       if (closest) {
-        closest.open = !closest.open;
-        this._redrawMap();
-        this._broadcast({ type: 'door', x: closest.x, y: closest.y, open: closest.open });
+        if (this.isHost) {
+          closest.open = !closest.open;
+          this._redrawMap();
+          this._broadcast({ type: 'door', x: closest.x, y: closest.y, open: closest.open });
+        } else {
+          this._sendTo(this.hostId, { type: 'doorRequest', x: closest.x, y: closest.y });
+        }
       }
     }
 
     // ── Death & Respawn ────────────────────────────────────────────────────
     _die() {
-      const me = this.players.get(this.myId);
-      if (!me || me.dead) return;
-      me.dead = true;
-      me.hp = 0;
-      setTimeout(() => this._respawn(), RESPAWN_S * 1000);
+      if (this.isHost) this._applyDamage(this.myId, MAX_HP, null);
     }
 
     // Returns a spawn index for the given player: team-based in team mode, random otherwise
@@ -1413,13 +1609,7 @@
     }
 
     _respawn() {
-      const me = this.players.get(this.myId);
-      if (!me) return;
-      const sp = this.map.spawns[this._pickRespawnIdx(me)];
-      me.x = sp.x; me.y = sp.y;
-      me.hp = MAX_HP;
-      me.dead = false;
-      this._broadcast({ type: 'respawn', id: this.myId, x: me.x, y: me.y });
+      if (this.isHost) this._respawnPlayer(this.myId);
     }
 
     // ── Indicators ─────────────────────────────────────────────────────────
@@ -1450,6 +1640,7 @@
       const sp      = this.map.spawns[resolvedSpawnIdx];
       const bot     = mkPlayer(botId, sp.x, sp.y);
       bot.isBot        = true;
+      bot.respawnAt    = 0;
       bot.botState     = 'wander';     // 'wander' | 'chase'
       bot.botTarget    = null;         // {x, y} movement target
       bot.botTimer     = 0;            // time until next wander-target pick
@@ -1457,7 +1648,7 @@
       this.players.set(botId, bot);
       if (broadcast) {
         // Tell all connected peers about this new bot (in-game late-add scenario)
-        this._broadcast({ type: 'playerJoin', id: botId });
+        this._broadcast({ type: 'playerJoin', player: this._serializePlayer(botId, bot) });
       }
     }
 
@@ -1545,30 +1736,8 @@
       playShot(false);
       this._spawnBullet(bot.x, bot.y, bot.angle, false);
 
-      // Hit detection against enemy players (skip friendly fire in team mode)
-      const ray = castRay(this.map, bot.x, bot.y, bot.angle);
-      for (const [pid, p] of this.players) {
-        if (p.isBot || p.dead) continue;
-        if (this.roomSettings.gameMode === 'team' && p.team === bot.team) continue;
-        const dx  = p.x - bot.x, dy = p.y - bot.y;
-        const cos = Math.cos(bot.angle), sin = Math.sin(bot.angle);
-        const proj = dx * cos + dy * sin;
-        const perp = Math.abs(dx * sin - dy * cos);
-        if (proj > 0 && proj <= ray.dist + P_RAD && perp <= P_RAD * 1.4) {
-          if (pid === this.myId) {
-            // Apply to local player directly
-            const me = this.players.get(this.myId);
-            if (me && !me.dead) {
-              me.hp = Math.max(0, me.hp - MAX_HP);
-              if (me.hp <= 0) this._die();
-            }
-          } else {
-            // Apply to remote peer via message
-            this._sendTo(pid, { type: 'hit', target: pid, dmg: MAX_HP });
-          }
-          break;
-        }
-      }
+      const targetId = this._findShotTarget(bot);
+      if (targetId) this._applyDamage(targetId, MAX_HP, bot.id);
 
       // Broadcast shot indicator to all peers
       this._broadcast({
@@ -1832,6 +2001,10 @@
 
       // Dead overlay (DOM)
       if (me.dead) {
+        const remain = me.respawnAt
+          ? Math.max(0, (me.respawnAt - Date.now()) / 1000)
+          : RESPAWN_S;
+        this.domRespawn.textContent = `${remain.toFixed(1)} 秒後重生…`;
         this.domDead.classList.add('show');
       } else {
         this.domDead.classList.remove('show');
@@ -1879,29 +2052,15 @@
       if (this.syncTimer < SYNC_MS) return;
       this.syncTimer = 0;
       if (!this.conns.size) return;
-      this._broadcast({
-        type: 'state',
-        id: this.myId,
-        x: me.x, y: me.y,
-        angle: me.angle,
-        hp: me.hp,
-        dead: me.dead,
-      });
-      // Host also syncs all bot states so peers can render them
       if (this.isHost) {
-        for (const [bid, bot] of this.players) {
-          if (!bot.isBot) continue;
-          this._broadcast({
-            type: 'state',
-            id: bid,
-            x: bot.x, y: bot.y,
-            angle: bot.angle,
-            hp: bot.hp,
-            dead: bot.dead,
-            isBot: true,
-            team: bot.team,
-          });
-        }
+        this._broadcastAllPlayerStates();
+      } else {
+        this._sendTo(this.hostId, {
+          type: 'stateRequest',
+          x: me.x,
+          y: me.y,
+          angle: me.angle,
+        });
       }
     }
   }
