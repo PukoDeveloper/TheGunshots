@@ -56,7 +56,10 @@
   const SOUND_TIP_OFFSET = 6;     // inward offset of the arc's direction dot (px)
   const RESPAWN_S = 3.5;           // respawn delay (s)
   const MAX_HP    = 100;
+  const MAG_SIZE  = 8;             // bullets per magazine
+  const RELOAD_S  = 1.4;           // reload time (s)
   const RESPAWN_MS = RESPAWN_S * 1000;
+  const RELOAD_MS  = RELOAD_S * 1000;
   const NET_MAX_STEP = P_SPD * (SYNC_MS / 1000) * 2.4;
   const NET_STEP_TOLERANCE = 1.75;
   const SHOT_POS_EPS = 56;
@@ -374,6 +377,8 @@
       this.domRespawn   = document.getElementById('hud-respawn-msg');
       this.domDoorPrmpt = document.getElementById('hud-door-prompt');
       this.domRoomCode  = document.getElementById('hud-room-code');
+      this.domAmmo      = document.getElementById('hud-ammo');
+      this.domBtnShootLeft = document.getElementById('btn-shoot-left');
       this.domBtnShoot  = document.getElementById('btn-shoot');
       this.domBtnInteract = document.getElementById('btn-interact');
 
@@ -511,6 +516,7 @@
       });
 
       window.addEventListener('click', e => {
+        if (e.target.closest(INTERACTIVE_SELECTOR)) return;
         if (this.running) this._shoot();
       });
 
@@ -521,6 +527,8 @@
       window.addEventListener('touchcancel',e => this._onTouchEnd(e),   { passive: false });
 
       // Mobile action buttons
+      this.domBtnShootLeft.addEventListener('touchstart', e => { e.preventDefault(); if (this.running) this._shoot(); }, { passive: false });
+      this.domBtnShootLeft.addEventListener('click', () => { if (this.running) this._shoot(); });
       this.domBtnShoot.addEventListener('touchstart', e => { e.preventDefault(); if (this.running) this._shoot(); }, { passive: false });
       this.domBtnShoot.addEventListener('click', () => { if (this.running) this._shoot(); });
       this.domBtnInteract.addEventListener('touchstart', e => { e.preventDefault(); if (this.running) this._interactDoor(); }, { passive: false });
@@ -874,6 +882,9 @@
         isBot: !!p.isBot,
         team: p.team ?? 0,
         respawnAt: p.respawnAt || 0,
+        ammo: Number.isFinite(p.ammo) ? p.ammo : MAG_SIZE,
+        reloading: !!p.reloading,
+        reloadUntil: p.reloadUntil || 0,
       };
     }
 
@@ -957,6 +968,9 @@
       p.isBot = !!data.isBot;
       p.team = data.team ?? p.team ?? 0;
       p.respawnAt = data.respawnAt || 0;
+      p.ammo = Number.isFinite(data.ammo) ? clamp(data.ammo, 0, MAG_SIZE) : (Number.isFinite(p.ammo) ? p.ammo : MAG_SIZE);
+      p.reloading = !!data.reloading;
+      p.reloadUntil = Number.isFinite(data.reloadUntil) ? data.reloadUntil : (p.reloadUntil || 0);
       if (p.isBot) {
         p.botState = p.botState || 'wander';
         p.botTarget = p.botTarget || null;
@@ -1014,6 +1028,9 @@
       p.hp = MAX_HP;
       p.dead = false;
       p.respawnAt = 0;
+      p.ammo = MAG_SIZE;
+      p.reloading = false;
+      p.reloadUntil = 0;
       if (p.isBot) {
         p.botState = 'wander';
         p.botTarget = null;
@@ -1071,8 +1088,13 @@
         if (drift > SHOT_POS_EPS) return;
       }
       if (Number.isFinite(msg.angle)) shooter.angle = msg.angle;
+      if (!this._consumeAmmoAndReload(shooter)) {
+        this._broadcastPlayerState(fromId);
+        return;
+      }
       const targetId = this._findShotTarget(shooter);
       if (targetId) this._applyDamage(targetId, MAX_HP, fromId);
+      this._broadcastPlayerState(fromId);
       this._broadcast({
         type: 'shot',
         id: fromId,
@@ -1526,6 +1548,7 @@
     _shoot() {
       const me = this.players.get(this.myId);
       if (!me || me.dead) return;
+      if (!this._consumeAmmoAndReload(me)) return;
 
       playShot(true);
       this._spawnBullet(me.x, me.y, me.angle, true);
@@ -1533,6 +1556,7 @@
       if (this.isHost) {
         const targetId = this._findShotTarget(me);
         if (targetId) this._applyDamage(targetId, MAX_HP, this.myId);
+        this._broadcastPlayerState(this.myId);
         this._broadcast({ type: 'shot', id: this.myId, x: me.x, y: me.y, angle: me.angle });
       } else {
         this._sendTo(this.hostId, {
@@ -1542,6 +1566,36 @@
           angle: me.angle,
         });
       }
+    }
+
+    _refreshReloadState(p, now = Date.now()) {
+      if (!p) return;
+      if (p.reloading && now >= (p.reloadUntil || 0)) {
+        p.reloading = false;
+        p.reloadUntil = 0;
+        p.ammo = MAG_SIZE;
+      }
+    }
+
+    _startReload(p, now = Date.now()) {
+      this._refreshReloadState(p, now);
+      if (!p || p.dead || p.reloading || p.ammo >= MAG_SIZE) return false;
+      p.reloading = true;
+      p.reloadUntil = now + RELOAD_MS;
+      return true;
+    }
+
+    _consumeAmmoAndReload(p) {
+      const now = Date.now();
+      this._refreshReloadState(p, now);
+      if (!p || p.dead || p.reloading) return false;
+      if (p.ammo <= 0) {
+        this._startReload(p, now);
+        return false;
+      }
+      p.ammo = Math.max(0, p.ammo - 1);
+      if (p.ammo === 0) this._startReload(p, now);
+      return true;
     }
 
     _applyBotDamage(botId, dmg) {
@@ -1711,8 +1765,9 @@
 
           const angleDiff = Math.abs(normalizeAngle(bot.angle - angleToPlayer));
           if (angleDiff < BOT_AIM_TOL) {
-            this._botShoot(bot);
-            bot.botShootTimer = BOT_SHOOT_CD + (this.botRng() - 0.5) * 0.6;
+            if (this._botShoot(bot)) {
+              bot.botShootTimer = BOT_SHOOT_CD + (this.botRng() - 0.5) * 0.6;
+            }
           }
         }
       }
@@ -1733,6 +1788,7 @@
     }
 
     _botShoot(bot) {
+      if (!this._consumeAmmoAndReload(bot)) return false;
       playShot(false);
       this._spawnBullet(bot.x, bot.y, bot.angle, false);
 
@@ -1746,6 +1802,7 @@
       });
       // Host-side sound arc for bot shot
       this._pushSoundInd(bot.x, bot.y, 'shot');
+      return true;
     }
 
     // ── Camera ─────────────────────────────────────────────────────────────
@@ -1980,6 +2037,18 @@
       g.drawRoundedRect(bx, by, bw, bh, 4);
       g.lineStyle(0);
 
+      this._refreshReloadState(me);
+      if (this.domAmmo) {
+        if (me.dead) {
+          this.domAmmo.textContent = `彈藥: ${MAG_SIZE}/${MAG_SIZE}`;
+        } else if (me.reloading) {
+          const remain = Math.max(0, ((me.reloadUntil || 0) - Date.now()) / 1000);
+          this.domAmmo.textContent = `裝填中... ${remain.toFixed(1)}s`;
+        } else {
+          this.domAmmo.textContent = `彈藥: ${me.ammo}/${MAG_SIZE}`;
+        }
+      }
+
       // Door prompt (DOM)
       let doorNearby = null;
       for (const d of this.map.doors) {
@@ -2070,7 +2139,10 @@
   // ─────────────────────────────────────────────────────────────────────────
 
   function mkPlayer(id, x, y) {
-    return { id, x, y, angle: 0, hp: MAX_HP, dead: false };
+    return {
+      id, x, y, angle: 0, hp: MAX_HP, dead: false,
+      ammo: MAG_SIZE, reloading: false, reloadUntil: 0,
+    };
   }
 
   // ─────────────────────────────────────────────────────────────────────────
