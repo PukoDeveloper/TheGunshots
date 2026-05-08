@@ -963,6 +963,8 @@
 
         case 'state':
           if (msg.id !== this.myId) {
+            // Host relays state updates from clients to all other clients
+            if (this.isHost) this._broadcast(msg, fromId);
             let p = this.players.get(msg.id);
             if (!p) { p = mkPlayer(msg.id, msg.x, msg.y); this.players.set(msg.id, p); }
             // Detect footstep movement and push a sound indicator if within range
@@ -979,6 +981,8 @@
 
         case 'shot':
           if (msg.id !== this.myId) {
+            // Host relays shot events from clients to all other clients
+            if (this.isHost) this._broadcast(msg, fromId);
             playShot(false);
             this.shotInds.push({ wx: msg.x, wy: msg.y, angle: msg.angle, ttl: IND_TTL });
             // Visual bullet trail from the shooter's perspective
@@ -995,10 +999,18 @@
               me.hp = Math.max(0, me.hp - msg.dmg);
               if (me.hp <= 0) this._die();
             }
+          } else if (this.isHost) {
+            // Host applies damage to bots on behalf of remote players
+            const target = this.players.get(msg.target);
+            if (target && target.isBot) {
+              this._applyBotDamage(msg.target, msg.dmg);
+            }
           }
           break;
 
         case 'door':
+          // Host relays door changes from clients to all other clients
+          if (this.isHost) this._broadcast(msg, fromId);
           const d = this.map.doors.find(d => d.x === msg.x && d.y === msg.y);
           if (d) d.open = msg.open;
           this._redrawMap();
@@ -1006,6 +1018,8 @@
 
         case 'respawn':
           if (msg.id !== this.myId) {
+            // Host relays respawn events from clients to all other clients
+            if (this.isHost) this._broadcast(msg, fromId);
             const p2 = this.players.get(msg.id);
             if (p2) { p2.x = msg.x; p2.y = msg.y; p2.hp = MAX_HP; p2.dead = false; }
           }
@@ -1301,8 +1315,13 @@
         if (proj > 0 && proj <= ray.dist + P_RAD && perp <= P_RAD * 1.4) {
           const dmg = MAX_HP;
           if (p.isBot) {
-            // Apply bot damage locally (bots have no PeerJS connection)
-            this._applyBotDamage(id, dmg);
+            if (this.isHost) {
+              // Host applies bot damage directly
+              this._applyBotDamage(id, dmg);
+            } else {
+              // Non-host: ask the host to apply the damage
+              this._broadcast({ type: 'hit', id: this.myId, target: id, dmg });
+            }
           } else {
             this._broadcast({ type: 'hit', target: id, dmg });
           }
