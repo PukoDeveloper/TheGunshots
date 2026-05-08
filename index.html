@@ -235,6 +235,16 @@
     }
     #hud-room-code.show { display: block; }
 
+    #hud-ammo {
+      position: absolute;
+      top: 12px; left: 14px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.82rem;
+      color: #dddddd;
+      letter-spacing: 1px;
+      text-shadow: 0 1px 2px #000;
+    }
+
     /* Waiting room sub-section label */
     .wr-sub-label {
       font-size: 0.78rem;
@@ -292,16 +302,19 @@
       -webkit-user-select: none;
     }
 
-    #btn-shoot {
+    #btn-shoot,
+    #btn-shoot-left {
       width: 72px; height: 72px;
-      right: 20px; bottom: 20px;
       background: rgba(200, 40, 40, 0.75);
       border: 2px solid rgba(255, 80, 80, 0.6);
       color: #fff;
       font-size: 1.6rem;
       box-shadow: 0 0 16px rgba(200,30,30,0.5);
     }
+    #btn-shoot { right: 20px; bottom: 20px; }
+    #btn-shoot-left { left: 20px; bottom: 20px; }
     #btn-shoot:active { background: rgba(255, 60, 60, 0.9); transform: scale(0.93); }
+    #btn-shoot-left:active { background: rgba(255, 60, 60, 0.9); transform: scale(0.93); }
 
     #btn-interact {
       width: 64px; height: 64px;
@@ -317,7 +330,8 @@
 
     @media (pointer: coarse) {
       /* Show mobile buttons on touch devices */
-      #btn-shoot { display: flex; align-items: center; justify-content: center; }
+      #btn-shoot,
+      #btn-shoot-left { display: flex; align-items: center; justify-content: center; }
       #btn-interact.show { display: flex; align-items: center; justify-content: center; }
     }
 
@@ -550,7 +564,7 @@
 
   <p id="controls-hint">
     桌面：WASD 移動 · 滑鼠瞄準 · 左鍵射擊 · E 開門<br>
-    手機：左搖桿移動（偏移越大越快）· 右搖桿瞄準 · 🔫 射擊按鈕 · 互動按鈕開門
+    手機：左搖桿移動（偏移越大越快）· 右搖桿瞄準 · 左/右（擇一）🔫 射擊按鈕 · 互動按鈕開門
   </p>
 </div>
 
@@ -614,7 +628,9 @@
   </div>
   <div id="hud-door-prompt">[E] 開門</div>
   <div id="hud-room-code"></div>
+  <div id="hud-ammo"></div>
   <!-- Mobile action buttons -->
+  <button class="mobile-action-btn" id="btn-shoot-left">🔫</button>
   <button class="mobile-action-btn" id="btn-shoot">🔫</button>
   <button class="mobile-action-btn" id="btn-interact"></button>
 </div>
