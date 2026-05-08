@@ -1574,6 +1574,8 @@
     _refreshReloadState(p, now = Date.now()) {
       if (!p) return;
       if (p.reloading && !Number.isFinite(p.reloadUntil)) {
+        // Corrupted or incomplete sync snapshot: re-anchor reload timer instead
+        // of instantly finishing reload.
         p.reloadUntil = now + RELOAD_MS;
         return;
       }
@@ -2044,12 +2046,13 @@
       g.drawRoundedRect(bx, by, bw, bh, 4);
       g.lineStyle(0);
 
-      this._refreshReloadState(me);
+      const now = Date.now();
+      this._refreshReloadState(me, now);
       if (this.domAmmo) {
         if (me.dead) {
           this.domAmmo.textContent = `彈藥: ${MAG_SIZE}/${MAG_SIZE}`;
         } else if (me.reloading) {
-          const remain = Math.max(0, ((me.reloadUntil || 0) - Date.now()) / 1000);
+          const remain = Math.max(0, ((me.reloadUntil || 0) - now) / 1000);
           this.domAmmo.textContent = `裝填中... ${remain.toFixed(1)}s`;
         } else {
           this.domAmmo.textContent = `彈藥: ${me.ammo}/${MAG_SIZE}`;
