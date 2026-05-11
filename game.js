@@ -338,6 +338,8 @@
       this.syncTimer = 0;
       this.lastNetStateAt = new Map();
       this.respawnTimers  = new Map();
+      this.specCamX = 0;   // spectator camera world-X (used when local player is dead)
+      this.specCamY = 0;   // spectator camera world-Y
 
       // ── Bot state ──────────────────────────────────────────────────────
       this.botCount = 0;
@@ -1772,7 +1774,25 @@
 
     // ── Movement ───────────────────────────────────────────────────────────
     _updateMovement(dt, me) {
-      if (me.dead) return;
+      if (me.dead) {
+        // Spectator mode: move the free-roaming camera with WASD / left joystick
+        let vx = 0, vy = 0;
+        if (this.keys['a'] || this.keys['arrowleft'])  vx -= 1;
+        if (this.keys['d'] || this.keys['arrowright']) vx += 1;
+        if (this.keys['w'] || this.keys['arrowup'])    vy -= 1;
+        if (this.keys['s'] || this.keys['arrowdown'])  vy += 1;
+        if (this.jL.on) {
+          const len = Math.hypot(this.jL.dx, this.jL.dy);
+          if (len > JOY_DEAD_ZONE) { vx = this.jL.dx / len; vy = this.jL.dy / len; }
+          else { vx = 0; vy = 0; }
+        }
+        if (vx !== 0 || vy !== 0) {
+          const len = Math.hypot(vx, vy) || 1;
+          this.specCamX = clamp(this.specCamX + (vx / len) * P_SPD * dt, 0, MW * TS);
+          this.specCamY = clamp(this.specCamY + (vy / len) * P_SPD * dt, 0, MH * TS);
+        }
+        return;
+      }
 
       let vx = 0, vy = 0;
 
@@ -1802,6 +1822,9 @@
         }
         this._movePlayer(me, vx * speedScale * P_SPD * dt, vy * speedScale * P_SPD * dt);
       }
+      // Keep spectator camera in sync with live player position
+      this.specCamX = me.x;
+      this.specCamY = me.y;
     }
 
     _movePlayer(p, dx, dy) {
@@ -1998,6 +2021,7 @@
       const bot     = mkPlayer(botId, sp.x, sp.y);
       bot.isBot        = true;
       bot.respawnAt    = 0;
+      bot.livesLeft    = this.roomSettings.lives || 0;
       bot.botState     = 'wander';     // 'wander' | 'chase'
       bot.botTarget    = null;         // {x, y} movement target
       bot.botTimer     = 0;            // time until next wander-target pick
@@ -2110,8 +2134,10 @@
 
     // ── Camera ─────────────────────────────────────────────────────────────
     _updateCamera(me) {
-      this.world.x = Math.round(this.app.screen.width  / 2 - me.x);
-      this.world.y = Math.round(this.app.screen.height / 2 - me.y);
+      const cx = me.dead ? this.specCamX : me.x;
+      const cy = me.dead ? this.specCamY : me.y;
+      this.world.x = Math.round(this.app.screen.width  / 2 - cx);
+      this.world.y = Math.round(this.app.screen.height / 2 - cy);
     }
 
     // ── Render: Players ────────────────────────────────────────────────────
@@ -2194,9 +2220,16 @@
     _renderDarkness(me) {
       const { app, darkRT, darkFill, darkAmb, darkFov } = this;
       const W = app.screen.width, H = app.screen.height;
-      const cx = W / 2, cy = H / 2;
+
+      // Spectators see the full map – no darkness overlay
+      if (me.dead) {
+        darkFill.clear();
+        app.renderer.render(darkFill, { renderTexture: darkRT, clear: true });
+        return;
+      }
 
       // 1. Fill render texture with opaque black
+      const cx = W / 2, cy = H / 2;
       darkFill.clear();
       darkFill.beginFill(0x000000, 0.96);
       darkFill.drawRect(0, 0, W, H);
@@ -2210,8 +2243,8 @@
       darkAmb.endFill();
       app.renderer.render(darkAmb, { renderTexture: darkRT, clear: false });
 
-      // 3. Erase FOV cone
-      if (!me.dead) {
+      // 3. Erase FOV cone (player is alive at this point)
+      {
         const worldPts = buildFovPoly(this.map, me.x, me.y, me.angle);
         // Transform to screen-space
         const offX = cx - me.x, offY = cy - me.y;
@@ -2231,7 +2264,7 @@
     _renderIndicators(me) {
       const g = this.indGfx;
       g.clear();
-      if (!this.shotInds.length) return;
+      if (me.dead || !this.shotInds.length) return;
 
       const cx = this.app.screen.width  / 2;
       const cy = this.app.screen.height / 2;
@@ -2287,7 +2320,7 @@
     _renderSoundInds(me) {
       const g = this.soundGfx;
       g.clear();
-      if (!this.soundInds.length) return;
+      if (me.dead || !this.soundInds.length) return;
 
       const cx = this.app.screen.width  / 2;
       const cy = this.app.screen.height / 2;
@@ -2397,13 +2430,15 @@
       if (me.dead) {
         const lives = this.roomSettings.lives || 0;
         const permanentlyDead = lives > 0 && (me.livesLeft || 0) <= 0;
+        const isMobile = 'ontouchstart' in window;
+        const spectateHint = isMobile ? '（左搖桿移動視角）' : '（WASD 移動視角觀戰）';
         if (permanentlyDead) {
-          this.domRespawn.textContent = '你已陣亡（無剩餘生命）';
+          this.domRespawn.textContent = `你已陣亡（無剩餘生命）${spectateHint}`;
         } else if (me.respawnAt) {
           const remain = Math.max(0, (me.respawnAt - Date.now()) / 1000);
-          this.domRespawn.textContent = `${remain.toFixed(1)} 秒後重生…`;
+          this.domRespawn.textContent = `${remain.toFixed(1)} 秒後重生… ${spectateHint}`;
         } else {
-          this.domRespawn.textContent = `${RESPAWN_S.toFixed(1)} 秒後重生…`;
+          this.domRespawn.textContent = `${RESPAWN_S.toFixed(1)} 秒後重生… ${spectateHint}`;
         }
         this.domDead.classList.add('show');
       } else {
@@ -2454,7 +2489,8 @@
       if (!this.conns.size) return;
       if (this.isHost) {
         this._broadcastAllPlayerStates();
-      } else {
+      } else if (!me.dead) {
+        // Dead players don't send position – host already knows their dead state
         this._sendTo(this.hostId, {
           type: 'stateRequest',
           x: me.x,
