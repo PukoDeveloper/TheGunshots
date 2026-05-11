@@ -245,6 +245,78 @@
       text-shadow: 0 1px 2px #000;
     }
 
+    #hud-mode {
+      position: absolute;
+      top: 12px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 0.82rem;
+      color: #d8d8d8;
+      letter-spacing: 1px;
+      text-shadow: 0 1px 2px #000;
+    }
+
+    #hud-match-end {
+      display: none;
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 12px;
+      background: rgba(0, 0, 0, 0.72);
+      overflow-y: auto;
+      padding: 16px;
+      pointer-events: auto;
+    }
+    #hud-match-end.show { display: flex; }
+    #hud-match-end h2 {
+      font-size: clamp(1.4rem, 4vw, 2.2rem);
+      color: #66ccff;
+      text-shadow: 0 0 20px rgba(68,136,255,0.9);
+    }
+    #hud-match-end > p {
+      font-size: 0.95rem;
+      color: #d0d0d0;
+      letter-spacing: 1px;
+    }
+
+    /* Scoreboard table inside match-end overlay */
+    .scoreboard {
+      border-collapse: collapse;
+      font-size: clamp(0.7rem, 1.8vw, 0.9rem);
+      letter-spacing: 0.5px;
+      max-width: min(680px, 96vw);
+      width: 100%;
+      pointer-events: none;
+    }
+    .scoreboard th, .scoreboard td {
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 5px 10px;
+      text-align: center;
+    }
+    .scoreboard thead tr { background: rgba(68,136,255,0.18); color: #aaddff; }
+    .scoreboard tbody tr { color: #ccc; }
+    .scoreboard tbody tr:nth-child(even) { background: rgba(255,255,255,0.04); }
+    .scoreboard tbody tr.is-self { color: #44ff88; font-weight: bold; }
+
+    /* Lives HUD element */
+    #hud-lives {
+      position: absolute;
+      top: 30px; left: 14px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.78rem;
+      color: #ffaa44;
+      letter-spacing: 1px;
+      text-shadow: 0 1px 2px #000;
+    }
+
+    /* Back-to-lobby button inside HUD overlay – needs its own pointer-events */
+    #btn-back-lobby {
+      pointer-events: auto;
+      margin-top: 6px;
+      padding: 10px 28px;
+    }
+
     /* Waiting room sub-section label */
     .wr-sub-label {
       font-size: 0.78rem;
@@ -435,6 +507,12 @@
       justify-content: center;
     }
 
+    .wr-mode-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
     .size-btn {
       flex: 1;
       background: rgba(255,255,255,0.05);
@@ -603,10 +681,17 @@
           <span id="wr-bot-display">0</span>
           <button class="btn size-btn" id="wr-bot-inc">+</button>
         </div>
+        <div class="wr-sub-label">每人生命（0 = 無限）</div>
+        <div class="wr-bot-row">
+          <button class="btn size-btn" id="wr-lives-dec">−</button>
+          <span id="wr-lives-display">∞</span>
+          <button class="btn size-btn" id="wr-lives-inc">+</button>
+        </div>
         <div class="wr-sub-label">遊戲模式</div>
-        <div class="wr-size-row">
-          <button class="btn mode-btn active" data-mode="ffa">自由競技</button>
-          <button class="btn mode-btn" data-mode="team">兩隊模式</button>
+        <div class="wr-mode-row">
+          <button class="btn mode-btn active" data-mode="ffa">大亂鬥</button>
+          <button class="btn mode-btn" data-mode="team_deathmatch">團隊死鬥</button>
+          <button class="btn mode-btn" data-mode="team_survival">團隊生存</button>
         </div>
       </div>
 
@@ -629,6 +714,14 @@
   <div id="hud-door-prompt">[E] 開門</div>
   <div id="hud-room-code"></div>
   <div id="hud-ammo"></div>
+  <div id="hud-lives"></div>
+  <div id="hud-mode"></div>
+  <div id="hud-match-end">
+    <h2 id="hud-match-end-title"></h2>
+    <p id="hud-match-end-desc"></p>
+    <div id="hud-scoreboard"></div>
+    <button class="btn btn-primary" id="btn-back-lobby">🏠 回到大廳</button>
+  </div>
   <!-- Mobile action buttons -->
   <button class="mobile-action-btn" id="btn-shoot-left">🔫</button>
   <button class="mobile-action-btn" id="btn-shoot">🔫</button>
