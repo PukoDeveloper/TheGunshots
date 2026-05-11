@@ -245,6 +245,38 @@
       text-shadow: 0 1px 2px #000;
     }
 
+    #hud-mode {
+      position: absolute;
+      top: 12px; left: 50%;
+      transform: translateX(-50%);
+      font-size: 0.82rem;
+      color: #d8d8d8;
+      letter-spacing: 1px;
+      text-shadow: 0 1px 2px #000;
+    }
+
+    #hud-match-end {
+      display: none;
+      position: absolute;
+      top: 0; left: 0; width: 100%; height: 100%;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 10px;
+      background: rgba(0, 0, 0, 0.55);
+    }
+    #hud-match-end.show { display: flex; }
+    #hud-match-end h2 {
+      font-size: clamp(1.6rem, 5vw, 2.5rem);
+      color: #66ccff;
+      text-shadow: 0 0 20px rgba(68,136,255,0.9);
+    }
+    #hud-match-end p {
+      font-size: 0.95rem;
+      color: #d0d0d0;
+      letter-spacing: 1px;
+    }
+
     /* Waiting room sub-section label */
     .wr-sub-label {
       font-size: 0.78rem;
@@ -435,6 +467,12 @@
       justify-content: center;
     }
 
+    .wr-mode-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
     .size-btn {
       flex: 1;
       background: rgba(255,255,255,0.05);
@@ -604,9 +642,10 @@
           <button class="btn size-btn" id="wr-bot-inc">+</button>
         </div>
         <div class="wr-sub-label">遊戲模式</div>
-        <div class="wr-size-row">
-          <button class="btn mode-btn active" data-mode="ffa">自由競技</button>
-          <button class="btn mode-btn" data-mode="team">兩隊模式</button>
+        <div class="wr-mode-row">
+          <button class="btn mode-btn active" data-mode="ffa">大亂鬥</button>
+          <button class="btn mode-btn" data-mode="team_deathmatch">團隊死鬥</button>
+          <button class="btn mode-btn" data-mode="team_survival">團隊生存</button>
         </div>
       </div>
 
@@ -629,6 +668,11 @@
   <div id="hud-door-prompt">[E] 開門</div>
   <div id="hud-room-code"></div>
   <div id="hud-ammo"></div>
+  <div id="hud-mode"></div>
+  <div id="hud-match-end">
+    <h2 id="hud-match-end-title"></h2>
+    <p id="hud-match-end-desc"></p>
+  </div>
   <!-- Mobile action buttons -->
   <button class="mobile-action-btn" id="btn-shoot-left">🔫</button>
   <button class="mobile-action-btn" id="btn-shoot">🔫</button>

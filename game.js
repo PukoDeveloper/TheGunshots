@@ -74,6 +74,8 @@
   const BOT_SIGHT     = 280;       // bot detection radius (px)
   const BOT_AIM_TOL   = Math.PI / 5; // ±36° aim tolerance before bot shoots
   const MAX_PLAYERS   = 8;         // max total players (humans + bots) per room
+  const FFA_KILL_LIMIT = 12;
+  const TEAM_KILL_LIMIT = 24;
 
   const C = {
     FLOOR:    0x252525,
@@ -346,6 +348,8 @@
       this.roomSettings  = { mapSize: 'medium', botCount: 0, gameMode: 'ffa' };
       this.waitingPeerIds = [];   // peer IDs of non-host players in waiting room
       this.hostId        = null;  // PeerJS ID of the host
+      this.matchEnded    = false;
+      this.matchStats    = { ffaKills: {}, teamKills: { 0: 0, 1: 0 } };
 
       // ── Input ──────────────────────────────────────────────────────────
       this.keys = {};
@@ -378,6 +382,10 @@
       this.domDoorPrmpt = document.getElementById('hud-door-prompt');
       this.domRoomCode  = document.getElementById('hud-room-code');
       this.domAmmo      = document.getElementById('hud-ammo');
+      this.domMode      = document.getElementById('hud-mode');
+      this.domMatchEnd  = document.getElementById('hud-match-end');
+      this.domMatchEndTitle = document.getElementById('hud-match-end-title');
+      this.domMatchEndDesc  = document.getElementById('hud-match-end-desc');
       this.domBtnShootLeft = document.getElementById('btn-shoot-left');
       this.domBtnShoot  = document.getElementById('btn-shoot');
       this.domBtnInteract = document.getElementById('btn-interact');
@@ -712,7 +720,7 @@
       document.querySelectorAll('.mode-btn').forEach(btn => {
         btn.addEventListener('click', () => {
           if (!this.isHost) return;
-          this.roomSettings.gameMode = btn.dataset.mode;
+          this.roomSettings.gameMode = this._normalizeGameMode(btn.dataset.mode);
           this._updateWaitingSettings();
           this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
           this._updateWaitingRoomUI();
@@ -736,7 +744,7 @@
 
         // Assign teams (team mode only)
         const teamAssignments = {};
-        if (this.roomSettings.gameMode === 'team') {
+        if (this._isTeamMode()) {
           allPlayerIds.forEach((pid, idx) => { teamAssignments[pid] = idx % 2; });
         }
 
@@ -744,7 +752,7 @@
         // team mode → each team gets its own randomly chosen spawn point
         const numSpawns = this.map.spawns.length;
         const spawnAssignments = {};
-        if (this.roomSettings.gameMode === 'team') {
+        if (this._isTeamMode()) {
           const idxA = Math.floor(Math.random() * numSpawns);
           const idxB = numSpawns > 1
             ? (idxA + 1 + Math.floor(Math.random() * (numSpawns - 1))) % numSpawns
@@ -770,12 +778,12 @@
         this.lastNetStateAt.clear();
         this.players.clear();
         for (const pid of [this.myId, ...this.waitingPeerIds]) {
-          this._spawnPlayerState(
-            pid,
-            spawnAssignments[pid] ?? 0,
-            (this.roomSettings.gameMode === 'team') ? (teamAssignments[pid] ?? 0) : 0
-          );
-        }
+            this._spawnPlayerState(
+              pid,
+              spawnAssignments[pid] ?? 0,
+              this._isTeamMode() ? (teamAssignments[pid] ?? 0) : 0
+            );
+          }
 
         // Spawn bots with their assigned positions (don't broadcast yet)
         this.botCount = 0;
@@ -785,7 +793,7 @@
 
         // Apply teams to all authoritative players
         for (const [pid, p] of this.players) {
-          p.team = (this.roomSettings.gameMode === 'team') ? (teamAssignments[pid] ?? 0) : 0;
+          p.team = this._isTeamMode() ? (teamAssignments[pid] ?? 0) : 0;
         }
 
         // Send welcome to each peer (includes bots, team assignments, and spawn info)
@@ -854,6 +862,7 @@
           this._updateWaitingRoomUI();
         } else if (this.isHost) {
           this._broadcast({ type: 'playerLeave', id: pid });
+          this._checkMatchEndCondition();
         }
       });
     }
@@ -914,8 +923,114 @@
       return !this._solid(x, y);
     }
 
+    _isTeamMode() {
+      return this.roomSettings.gameMode === 'team_deathmatch' ||
+        this.roomSettings.gameMode === 'team_survival';
+    }
+
+    _normalizeGameMode(mode) {
+      if (mode === 'team') return 'team_deathmatch';
+      if (mode === 'team_deathmatch' || mode === 'team_survival' || mode === 'ffa') return mode;
+      return 'ffa';
+    }
+
+    _isTeamSurvivalMode() {
+      return this.roomSettings.gameMode === 'team_survival';
+    }
+
+    _modeLabel(mode = this.roomSettings.gameMode) {
+      if (mode === 'team_deathmatch') return '團隊死鬥';
+      if (mode === 'team_survival') return '團隊生存';
+      return '大亂鬥';
+    }
+
+    _teamName(team) {
+      return team === 1 ? 'B隊' : 'A隊';
+    }
+
+    _resetMatchStats() {
+      this.matchEnded = false;
+      this.matchStats = { ffaKills: {}, teamKills: { 0: 0, 1: 0 } };
+      if (this.domMatchEnd) this.domMatchEnd.classList.remove('show');
+    }
+
+    _recordKill(attackerId, targetId) {
+      if (this.matchEnded) return;
+      if (!attackerId || attackerId === targetId) return;
+      const attacker = this.players.get(attackerId);
+      if (!attacker) return;
+      if (this.roomSettings.gameMode === 'ffa') {
+        this.matchStats.ffaKills[attackerId] = (this.matchStats.ffaKills[attackerId] || 0) + 1;
+      } else if (this._isTeamMode()) {
+        const team = attacker.team ?? 0;
+        this.matchStats.teamKills[team] = (this.matchStats.teamKills[team] || 0) + 1;
+      }
+    }
+
+    _countAliveTeams() {
+      const alive = { 0: 0, 1: 0 };
+      for (const [, p] of this.players) {
+        if (!p.dead) alive[p.team ?? 0] = (alive[p.team ?? 0] || 0) + 1;
+      }
+      return alive;
+    }
+
+    _checkMatchEndCondition() {
+      if (!this.isHost || this.matchEnded || !this.running) return;
+      if (this.roomSettings.gameMode === 'ffa') {
+        for (const [pid, kills] of Object.entries(this.matchStats.ffaKills)) {
+          if (kills >= FFA_KILL_LIMIT) {
+            this._endMatch({
+              title: '🏆 比賽結束',
+              desc: `${pid.slice(0, 8).toUpperCase()} 達成 ${FFA_KILL_LIMIT} 擊殺獲勝`,
+            });
+            return;
+          }
+        }
+        return;
+      }
+
+      if (this.roomSettings.gameMode === 'team_deathmatch') {
+        for (const team of [0, 1]) {
+          if ((this.matchStats.teamKills[team] || 0) >= TEAM_KILL_LIMIT) {
+            this._endMatch({
+              title: '🏆 團隊勝利',
+              desc: `${this._teamName(team)} 先達成 ${TEAM_KILL_LIMIT} 擊殺`,
+            });
+            return;
+          }
+        }
+        return;
+      }
+
+      if (this._isTeamSurvivalMode()) {
+        const alive = this._countAliveTeams();
+        const aliveTeams = [0, 1].filter(team => (alive[team] || 0) > 0);
+        if (aliveTeams.length === 1) {
+          this._endMatch({
+            title: '🏆 回合結束',
+            desc: `${this._teamName(aliveTeams[0])} 全員存活到最後`,
+          });
+        } else if (aliveTeams.length === 0) {
+          this._endMatch({ title: '🏆 回合結束', desc: '雙方同時陣亡，平手' });
+        }
+      }
+    }
+
+    _endMatch(result) {
+      this.matchEnded = true;
+      this.running = false;
+      this.domDead.classList.remove('show');
+      this.domDoorPrmpt.classList.remove('show');
+      this.domBtnInteract.classList.remove('show');
+      if (this.domMatchEndTitle) this.domMatchEndTitle.textContent = result.title;
+      if (this.domMatchEndDesc) this.domMatchEndDesc.textContent = result.desc;
+      if (this.domMatchEnd) this.domMatchEnd.classList.add('show');
+      if (this.isHost) this._broadcast({ type: 'matchEnd', result });
+    }
+
     _pickLateJoinTeam() {
-      if (this.roomSettings.gameMode !== 'team') return 0;
+      if (!this._isTeamMode()) return 0;
       const counts = [0, 0];
       for (const [, p] of this.players) {
         counts[p.team ?? 0] = (counts[p.team ?? 0] || 0) + 1;
@@ -925,7 +1040,7 @@
 
     _pickSpawnIdxForTeam(team) {
       if (!this.map || !this.map.spawns.length) return 0;
-      if (this.roomSettings.gameMode === 'team' && this.teamSpawnIdxs) {
+      if (this._isTeamMode() && this.teamSpawnIdxs) {
         return this.teamSpawnIdxs[team ?? 0] ?? 0;
       }
       return Math.floor(Math.random() * this.map.spawns.length);
@@ -984,7 +1099,7 @@
     }
 
     _isFriendlyFire(attacker, target) {
-      return this.roomSettings.gameMode === 'team' &&
+      return this._isTeamMode() &&
         (attacker.team ?? 0) === (target.team ?? 0);
     }
 
@@ -1010,6 +1125,7 @@
 
     _scheduleRespawn(id) {
       if (!this.isHost) return;
+      if (this._isTeamSurvivalMode()) return;
       this._clearRespawnTimer(id);
       const p = this.players.get(id);
       if (!p) return;
@@ -1053,7 +1169,9 @@
       if (target.hp <= 0) {
         target.hp = 0;
         target.dead = true;
+        this._recordKill(attackerId, targetId);
         this._scheduleRespawn(targetId);
+        this._checkMatchEndCondition();
       } else {
         this._broadcastPlayerState(targetId);
       }
@@ -1174,7 +1292,14 @@
           // We (client) entered the waiting room
           this.hostId = msg.hostId;
           this.waitingPeerIds = msg.peerIds;
-          this.roomSettings = msg.settings;
+          {
+            const incoming = msg.settings || {};
+            this.roomSettings = {
+              ...this.roomSettings,
+              ...incoming,
+              gameMode: this._normalizeGameMode(incoming.gameMode),
+            };
+          }
           this._showWaitingRoom(false);
           this._updateWaitingRoomUI();
           this._updateWaitingSettings();
@@ -1195,7 +1320,14 @@
 
         case 'settingsUpdate':
           // Host changed room settings
-          this.roomSettings = msg.settings;
+          {
+            const incoming = msg.settings || {};
+            this.roomSettings = {
+              ...this.roomSettings,
+              ...incoming,
+              gameMode: this._normalizeGameMode(incoming.gameMode),
+            };
+          }
           this._updateWaitingSettings();
           this._updateWaitingRoomUI();
           break;
@@ -1206,7 +1338,7 @@
             const sz = MAP_SIZES[msg.mapSize];
             if (sz) { MW = sz.w; MH = sz.h; }
           }
-          if (msg.gameMode) this.roomSettings.gameMode = msg.gameMode;
+          if (msg.gameMode) this.roomSettings.gameMode = this._normalizeGameMode(msg.gameMode);
           this.teamSpawnIdxs = msg.teamSpawnIdxs || null;
           this.map = generateMap(msg.seed);
           const sp = this.map.spawns[msg.spawnIdx % this.map.spawns.length];
@@ -1278,6 +1410,10 @@
         case 'respawn':
           if (!this.isHost && msg.player) this._upsertPlayerFromSnapshot(msg.player);
           break;
+
+        case 'matchEnd':
+          if (msg.result) this._endMatch(msg.result);
+          break;
       }
     }
 
@@ -1305,8 +1441,11 @@
       document.getElementById('waiting-room').style.display = 'none';
       document.getElementById('canvas-wrap').style.display = 'block';
       this.domHud.style.display = 'block';
+      if (this.domMode) this.domMode.textContent = `模式：${this._modeLabel()}`;
+      this._resetMatchStats();
 
       this.running = true;
+      if (this.isHost && this._isTeamSurvivalMode()) this._checkMatchEndCondition();
     }
 
     // ── Waiting room helpers ───────────────────────────────────────────────
@@ -1342,7 +1481,7 @@
       const hostId    = this.hostId || this.myId;
       const hostShort = hostId.slice(0, 8).toUpperCase();
       const hostIsMe  = hostId === this.myId;
-      const isTeam    = this.roomSettings.gameMode === 'team';
+      const isTeam    = this._isTeamMode();
 
       const teamAColor = '#' + C.TEAM_A.toString(16).padStart(6, '0');
       const teamBColor = '#' + C.TEAM_B.toString(16).padStart(6, '0');
@@ -1391,7 +1530,7 @@
         b.classList.toggle('active', b.dataset.size === this.roomSettings.mapSize);
       });
       document.querySelectorAll('.mode-btn').forEach(b => {
-        b.classList.toggle('active', b.dataset.mode === (this.roomSettings.gameMode || 'ffa'));
+        b.classList.toggle('active', b.dataset.mode === this._normalizeGameMode(this.roomSettings.gameMode));
       });
 
       // Update bot count display
@@ -1665,7 +1804,7 @@
     // Returns a spawn index for the given player: team-based in team mode, random otherwise
     _pickRespawnIdx(player) {
       const n = this.map.spawns.length;
-      if (this.roomSettings.gameMode === 'team' && this.teamSpawnIdxs) {
+      if (this._isTeamMode() && this.teamSpawnIdxs) {
         return this.teamSpawnIdxs[player.team ?? 0] ?? 0;
       }
       return Math.floor(Math.random() * n);
@@ -1727,7 +1866,7 @@
         for (const [pid, p] of this.players) {
           if (p.isBot || p.dead) continue;
           // In team mode, bots only target enemies (different team)
-          if (this.roomSettings.gameMode === 'team' && p.team === bot.team) continue;
+          if (this._isTeamMode() && p.team === bot.team) continue;
           const d2 = dist2(bot.x, bot.y, p.x, p.y);
           if (d2 < nearestDist) { nearestDist = d2; nearestTarget = p; }
         }
@@ -1836,7 +1975,7 @@
         let col;
         if (p.dead)        col = C.DEAD_P;
         else if (isSelf)   col = C.SELF;
-        else if (this.roomSettings.gameMode === 'team') {
+        else if (this._isTeamMode()) {
           const myTeam = me ? (me.team ?? 0) : 0;
           col = (p.team === myTeam) ? C.TEAM_A : C.TEAM_B;
         }
@@ -2056,6 +2195,15 @@
           this.domAmmo.textContent = `裝填中... ${remain.toFixed(1)}s`;
         } else {
           this.domAmmo.textContent = `彈藥: ${me.ammo}/${MAG_SIZE}`;
+        }
+      }
+      if (this.domMode) {
+        if (this.roomSettings.gameMode === 'team_deathmatch') {
+          this.domMode.textContent = `模式：${this._modeLabel()}（${TEAM_KILL_LIMIT} 擊殺）`;
+        } else if (this.roomSettings.gameMode === 'team_survival') {
+          this.domMode.textContent = `模式：${this._modeLabel()}（殲滅敵隊）`;
+        } else {
+          this.domMode.textContent = `模式：${this._modeLabel()}（${FFA_KILL_LIMIT} 擊殺）`;
         }
       }
 
