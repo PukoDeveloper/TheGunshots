@@ -345,7 +345,7 @@
       this.teamSpawnIdxs = null;   // { 0: spawnIdx, 1: spawnIdx } in team mode
 
       // ── Waiting room state ─────────────────────────────────────────────
-      this.roomSettings  = { mapSize: 'medium', botCount: 0, gameMode: 'ffa' };
+      this.roomSettings  = { mapSize: 'medium', botCount: 0, gameMode: 'ffa', lives: 0 };
       this.waitingPeerIds = [];   // peer IDs of non-host players in waiting room
       this.hostId        = null;  // PeerJS ID of the host
       this.matchEnded    = false;
@@ -382,10 +382,12 @@
       this.domDoorPrmpt = document.getElementById('hud-door-prompt');
       this.domRoomCode  = document.getElementById('hud-room-code');
       this.domAmmo      = document.getElementById('hud-ammo');
+      this.domLives     = document.getElementById('hud-lives');
       this.domMode      = document.getElementById('hud-mode');
       this.domMatchEnd  = document.getElementById('hud-match-end');
       this.domMatchEndTitle = document.getElementById('hud-match-end-title');
       this.domMatchEndDesc  = document.getElementById('hud-match-end-desc');
+      this.domScoreboard    = document.getElementById('hud-scoreboard');
       this.domBtnShootLeft = document.getElementById('btn-shoot-left');
       this.domBtnShoot  = document.getElementById('btn-shoot');
       this.domBtnInteract = document.getElementById('btn-interact');
@@ -672,6 +674,12 @@
         if (e.key === 'Enter') joinBtn.click();
       });
 
+      // Back to lobby from match-end screen (reloads page)
+      const backLobbyBtn = document.getElementById('btn-back-lobby');
+      if (backLobbyBtn) {
+        backLobbyBtn.addEventListener('click', () => window.location.reload());
+      }
+
       // Waiting room: click code to copy
       document.getElementById('wr-code').addEventListener('click', () => {
         const el = document.getElementById('wr-code');
@@ -713,6 +721,25 @@
           this._updateWaitingSettings();
           this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
           this._updateWaitingRoomUI();
+        }
+      });
+
+      // Waiting room: lives per player (host only)
+      document.getElementById('wr-lives-dec').addEventListener('click', () => {
+        if (!this.isHost) return;
+        if ((this.roomSettings.lives || 0) > 0) {
+          this.roomSettings.lives--;
+          this._updateWaitingSettings();
+          this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
+        }
+      });
+
+      document.getElementById('wr-lives-inc').addEventListener('click', () => {
+        if (!this.isHost) return;
+        if ((this.roomSettings.lives || 0) < 10) {
+          this.roomSettings.lives = (this.roomSettings.lives || 0) + 1;
+          this._updateWaitingSettings();
+          this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
         }
       });
 
@@ -804,6 +831,7 @@
             spawnIdx: spawnAssignments[pid] ?? 0,
             mapSize: this.roomSettings.mapSize,
             gameMode: this.roomSettings.gameMode,
+            lives: this.roomSettings.lives || 0,
             teams: teamAssignments,
             teamSpawnIdxs: this.teamSpawnIdxs,
             players: [...this.players.entries()].map(([id, p]) => this._serializePlayer(id, p)),
@@ -894,6 +922,9 @@
         ammo: Number.isFinite(p.ammo) ? p.ammo : MAG_SIZE,
         reloading: !!p.reloading,
         reloadUntil: p.reloadUntil || 0,
+        kills: p.kills || 0,
+        deaths: p.deaths || 0,
+        livesLeft: p.livesLeft ?? 0,
       };
     }
 
@@ -956,9 +987,17 @@
 
     _recordKill(attackerId, targetId) {
       if (this.matchEnded) return;
+      const target = this.players.get(targetId);
+      if (target) {
+        target.deaths = (target.deaths || 0) + 1;
+        if ((this.roomSettings.lives || 0) > 0) {
+          target.livesLeft = Math.max(0, (target.livesLeft || 0) - 1);
+        }
+      }
       if (!attackerId || attackerId === targetId) return;
       const attacker = this.players.get(attackerId);
       if (!attacker) return;
+      attacker.kills = (attacker.kills || 0) + 1;
       if (this.roomSettings.gameMode === 'ffa') {
         this.matchStats.ffaKills[attackerId] = (this.matchStats.ffaKills[attackerId] || 0) + 1;
       } else if (this._isTeamMode()) {
@@ -977,7 +1016,24 @@
 
     _checkMatchEndCondition() {
       if (!this.isHost || this.matchEnded || !this.running) return;
+      const livesMode = (this.roomSettings.lives || 0) > 0;
+
       if (this.roomSettings.gameMode === 'ffa') {
+        if (livesMode) {
+          // FFA with lives: match ends when ≤1 player still has lives
+          const withLives = [...this.players.values()].filter(p => (p.livesLeft || 0) > 0);
+          if (withLives.length <= 1) {
+            const winner = withLives[0];
+            this._endMatch({
+              title: '🏆 比賽結束',
+              desc: winner
+                ? `${winner.id.slice(0, 8).toUpperCase()} 最後存活獲勝`
+                : '所有玩家陣亡，平手',
+            });
+          }
+          return;
+        }
+        // FFA unlimited: kill limit
         for (const [pid, kills] of Object.entries(this.matchStats.ffaKills)) {
           if (kills >= FFA_KILL_LIMIT) {
             this._endMatch({
@@ -991,6 +1047,26 @@
       }
 
       if (this.roomSettings.gameMode === 'team_deathmatch') {
+        if (livesMode) {
+          // Team deathmatch with lives: team wins when enemy team has 0 lives
+          const teamLives = { 0: 0, 1: 0 };
+          for (const [, p] of this.players) {
+            const t = p.team ?? 0;
+            teamLives[t] = (teamLives[t] || 0) + (p.livesLeft || 0);
+          }
+          for (const t of [0, 1]) {
+            if (teamLives[t] <= 0) {
+              const winner = t === 0 ? 1 : 0;
+              this._endMatch({
+                title: '🏆 團隊勝利',
+                desc: `${this._teamName(winner)} 消滅了對方全隊`,
+              });
+              return;
+            }
+          }
+          return;
+        }
+        // Team deathmatch unlimited: kill limit
         for (const team of [0, 1]) {
           if ((this.matchStats.teamKills[team] || 0) >= TEAM_KILL_LIMIT) {
             this._endMatch({
@@ -1025,8 +1101,49 @@
       this.domBtnInteract.classList.remove('show');
       if (this.domMatchEndTitle) this.domMatchEndTitle.textContent = result.title;
       if (this.domMatchEndDesc) this.domMatchEndDesc.textContent = result.desc;
+      if (this.domScoreboard) this.domScoreboard.innerHTML = this._buildScoreboard();
       if (this.domMatchEnd) this.domMatchEnd.classList.add('show');
       if (this.isHost) this._broadcast({ type: 'matchEnd', result });
+    }
+
+    _buildScoreboard() {
+      const isTeam = this._isTeamMode();
+      const hasLives = (this.roomSettings.lives || 0) > 0;
+      const teamAColor = '#' + C.TEAM_A.toString(16).padStart(6, '0');
+      const teamBColor = '#' + C.TEAM_B.toString(16).padStart(6, '0');
+
+      // Collect and sort: by kills desc, then deaths asc
+      const entries = [...this.players.values()].map(p => ({
+        id: p.id,
+        isBot: !!p.isBot,
+        kills: p.kills || 0,
+        deaths: p.deaths || 0,
+        team: p.team ?? 0,
+        livesLeft: p.livesLeft ?? 0,
+      })).sort((a, b) => b.kills !== a.kills ? b.kills - a.kills : a.deaths - b.deaths);
+
+      const teamHeader = isTeam ? '<th>隊伍</th>' : '';
+      const livesHeader = hasLives ? '<th>剩餘命</th>' : '';
+
+      const rows = entries.map((e, i) => {
+        const isMe = e.id === this.myId;
+        const label = e.isBot ? `🤖 Bot` : e.id.slice(0, 8).toUpperCase();
+        const meTag = isMe ? ' <span style="color:#44ff88">（你）</span>' : '';
+        const teamCell = isTeam
+          ? `<td style="color:${e.team === 0 ? teamAColor : teamBColor}">${this._teamName(e.team)}</td>`
+          : '';
+        const livesCell = hasLives ? `<td>${e.livesLeft}</td>` : '';
+        return `<tr class="${isMe ? 'is-self' : ''}">
+          <td>${i + 1}</td>
+          <td style="text-align:left">${label}${meTag}</td>
+          ${teamCell}<td>${e.kills}</td><td>${e.deaths}</td>${livesCell}
+        </tr>`;
+      }).join('');
+
+      return `<table class="scoreboard">
+        <thead><tr><th>名次</th><th>玩家</th>${teamHeader}<th>擊殺</th><th>死亡</th>${livesHeader}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
     }
 
     _pickLateJoinTeam() {
@@ -1053,6 +1170,9 @@
       p.team = team ?? 0;
       p.isBot = !!extras.isBot;
       p.respawnAt = 0;
+      p.kills = 0;
+      p.deaths = 0;
+      p.livesLeft = this.roomSettings.lives || 0;
       if (p.isBot) {
         p.botState = 'wander';
         p.botTarget = null;
@@ -1089,6 +1209,12 @@
       p.reloadUntil = Number.isFinite(data.reloadUntil)
         ? data.reloadUntil
         : (Number.isFinite(p.reloadUntil) ? p.reloadUntil : 0);
+      if (Number.isFinite(data.kills)) p.kills = data.kills;
+      else if (!Number.isFinite(p.kills)) p.kills = 0;
+      if (Number.isFinite(data.deaths)) p.deaths = data.deaths;
+      else if (!Number.isFinite(p.deaths)) p.deaths = 0;
+      if (Number.isFinite(data.livesLeft)) p.livesLeft = data.livesLeft;
+      else if (!Number.isFinite(p.livesLeft)) p.livesLeft = 0;
       if (p.isBot) {
         p.botState = p.botState || 'wander';
         p.botTarget = p.botTarget || null;
@@ -1126,9 +1252,14 @@
     _scheduleRespawn(id) {
       if (!this.isHost) return;
       if (this._isTeamSurvivalMode()) return;
-      this._clearRespawnTimer(id);
       const p = this.players.get(id);
       if (!p) return;
+      // If a lives limit is set and this player has exhausted their lives, no respawn
+      if ((this.roomSettings.lives || 0) > 0 && (p.livesLeft || 0) <= 0) {
+        this._broadcastPlayerState(id);
+        return;
+      }
+      this._clearRespawnTimer(id);
       p.respawnAt = Date.now() + RESPAWN_MS;
       this._broadcastPlayerState(id);
       const timer = setTimeout(() => {
@@ -1255,6 +1386,7 @@
                 spawnIdx,
                 mapSize: this.roomSettings.mapSize,
                 gameMode: this.roomSettings.gameMode,
+                lives: this.roomSettings.lives || 0,
                 teams: Object.fromEntries([...this.players.entries()].map(([id, p]) => [id, p.team ?? 0])),
                 teamSpawnIdxs: this.teamSpawnIdxs,
                 players: [...this.players.entries()].map(([id, p]) => this._serializePlayer(id, p)),
@@ -1340,11 +1472,13 @@
             if (sz) { MW = sz.w; MH = sz.h; }
           }
           if (msg.gameMode) this.roomSettings.gameMode = this._normalizeGameMode(msg.gameMode);
+          if (Number.isFinite(msg.lives)) this.roomSettings.lives = msg.lives;
           this.teamSpawnIdxs = msg.teamSpawnIdxs || null;
           this.map = generateMap(msg.seed);
           const sp = this.map.spawns[msg.spawnIdx % this.map.spawns.length];
           const mePlayer = mkPlayer(this.myId, sp.x, sp.y);
           if (msg.teams && msg.teams[this.myId] !== undefined) mePlayer.team = msg.teams[this.myId];
+          mePlayer.livesLeft = this.roomSettings.lives || 0;
           mePlayer.respawnAt = 0;
           this.players.set(this.myId, mePlayer);
           // Add existing players (including bots spawned by host)
@@ -1467,7 +1601,7 @@
       document.getElementById('wr-waiting-msg').style.display   = isHost ? 'none' : 'block';
 
       // Disable controls for non-host clients (read-only view)
-      const hostOnly = ['wr-bot-dec', 'wr-bot-inc'];
+      const hostOnly = ['wr-bot-dec', 'wr-bot-inc', 'wr-lives-dec', 'wr-lives-inc'];
       document.querySelectorAll('.size-btn, .mode-btn').forEach(b => { b.disabled = !isHost; });
       hostOnly.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !isHost; });
 
@@ -1545,6 +1679,15 @@
       const incBtn  = document.getElementById('wr-bot-inc');
       if (decBtn) decBtn.disabled = !this.isHost || (this.roomSettings.botCount || 0) <= 0;
       if (incBtn) incBtn.disabled = !this.isHost || (this.roomSettings.botCount || 0) >= maxBots;
+
+      // Update lives display
+      const lives = this.roomSettings.lives || 0;
+      const livesDisplay = document.getElementById('wr-lives-display');
+      if (livesDisplay) livesDisplay.textContent = lives === 0 ? '∞' : String(lives);
+      const livesDecBtn = document.getElementById('wr-lives-dec');
+      const livesIncBtn = document.getElementById('wr-lives-inc');
+      if (livesDecBtn) livesDecBtn.disabled = !this.isHost || lives <= 0;
+      if (livesIncBtn) livesIncBtn.disabled = !this.isHost || lives >= 10;
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -2208,6 +2351,18 @@
         }
       }
 
+      // Lives display
+      if (this.domLives) {
+        const lives = this.roomSettings.lives || 0;
+        if (lives > 0) {
+          const myPlayer = this.players.get(this.myId);
+          const left = myPlayer ? (myPlayer.livesLeft || 0) : lives;
+          this.domLives.textContent = `生命：${'❤️'.repeat(left)}${left === 0 ? '💀' : ''}（${left}/${lives}）`;
+        } else {
+          this.domLives.textContent = '';
+        }
+      }
+
       // Door prompt (DOM)
       let doorNearby = null;
       for (const d of this.map.doors) {
@@ -2229,10 +2384,16 @@
 
       // Dead overlay (DOM)
       if (me.dead) {
-        const remain = me.respawnAt
-          ? Math.max(0, (me.respawnAt - Date.now()) / 1000)
-          : RESPAWN_S;
-        this.domRespawn.textContent = `${remain.toFixed(1)} 秒後重生…`;
+        const lives = this.roomSettings.lives || 0;
+        const permanentlyDead = lives > 0 && (me.livesLeft || 0) <= 0;
+        if (permanentlyDead) {
+          this.domRespawn.textContent = '你已陣亡（無剩餘生命）';
+        } else if (me.respawnAt) {
+          const remain = Math.max(0, (me.respawnAt - Date.now()) / 1000);
+          this.domRespawn.textContent = `${remain.toFixed(1)} 秒後重生…`;
+        } else {
+          this.domRespawn.textContent = `${RESPAWN_S.toFixed(1)} 秒後重生…`;
+        }
         this.domDead.classList.add('show');
       } else {
         this.domDead.classList.remove('show');
@@ -2301,6 +2462,7 @@
     return {
       id, x, y, angle: 0, hp: MAX_HP, dead: false,
       ammo: MAG_SIZE, reloading: false, reloadUntil: 0,
+      kills: 0, deaths: 0, livesLeft: 0,
     };
   }
 
