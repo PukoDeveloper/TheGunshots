@@ -2430,8 +2430,8 @@
       if (me.dead) {
         const lives = this.roomSettings.lives || 0;
         const permanentlyDead = lives > 0 && (me.livesLeft || 0) <= 0;
-        const isMobileSpec = 'ontouchstart' in window;
-        const spectateHint = isMobileSpec ? '（左搖桿移動視角）' : '（WASD 移動視角觀戰）';
+        const isMobile = 'ontouchstart' in window;
+        const spectateHint = isMobile ? '（左搖桿移動視角）' : '（WASD 移動視角觀戰）';
         if (permanentlyDead) {
           this.domRespawn.textContent = `你已陣亡（無剩餘生命）${spectateHint}`;
         } else if (me.respawnAt) {
