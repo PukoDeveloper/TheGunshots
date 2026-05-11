@@ -1171,6 +1171,7 @@
         target.dead = true;
         this._recordKill(attackerId, targetId);
         this._scheduleRespawn(targetId);
+        if (this._isTeamSurvivalMode()) this._broadcastPlayerState(targetId);
         this._checkMatchEndCondition();
       } else {
         this._broadcastPlayerState(targetId);
