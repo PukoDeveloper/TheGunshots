@@ -101,6 +101,9 @@
   // Selector for interactive UI elements that should not have touch events intercepted
   const INTERACTIVE_SELECTOR = 'button, input, a';
 
+  // Selector for scrollable containers that need native touch-scroll to work
+  const SCROLLABLE_SELECTOR = '.wr-col, #wr-players, #hud-match-end';
+
   // Maximum pixel height change that can be attributed to a mobile nav-bar appearing
   // (genuine resizes such as orientation changes are larger)
   const MAX_NAVBAR_HEIGHT_CHANGE = 200;
@@ -546,8 +549,10 @@
     }
 
     _onTouchStart(e) {
-      // Don't intercept touches on buttons/inputs so click handlers still fire
+      // Don't intercept touches on buttons/inputs so click handlers still fire,
+      // and don't intercept touches inside scrollable containers.
       if (e.target.closest(INTERACTIVE_SELECTOR)) return;
+      if (e.target.closest(SCROLLABLE_SELECTOR)) return;
       e.preventDefault();
       for (const t of e.changedTouches) {
         const half = window.innerWidth / 2;
@@ -561,6 +566,7 @@
 
     _onTouchMove(e) {
       if (e.target.closest(INTERACTIVE_SELECTOR)) return;
+      if (e.target.closest(SCROLLABLE_SELECTOR)) return;
       e.preventDefault();
       for (const t of e.changedTouches) {
         if (this.jL.on && t.identifier === this.jL.id) {
@@ -580,9 +586,9 @@
     }
 
     _onTouchEnd(e) {
-      // Don't intercept touches on buttons/inputs so click handlers still fire
-      if (e.target.closest(INTERACTIVE_SELECTOR)) return;
-      e.preventDefault();
+      // Always clean up any joystick state for this touch, regardless of where
+      // the finger lifted. This prevents a ghost "stuck" joystick when a drag
+      // starts outside an interactive element but ends over one.
       for (const t of e.changedTouches) {
         if (this.jL.on && t.identifier === this.jL.id) {
           this.jL = { on: false, ox: 0, oy: 0, dx: 0, dy: 0, id: null };
@@ -591,6 +597,11 @@
           this.jR = { on: false, ox: 0, oy: 0, dx: 0, dy: 0, id: null, shotPending: false };
         }
       }
+      // Only suppress the browser's default action when the touch is not on an
+      // interactive element or inside a scrollable container.
+      if (e.target.closest(INTERACTIVE_SELECTOR)) return;
+      if (e.target.closest(SCROLLABLE_SELECTOR)) return;
+      e.preventDefault();
     }
 
     // ── Service Worker ─────────────────────────────────────────────────────

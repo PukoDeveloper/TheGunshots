@@ -265,6 +265,8 @@
       gap: 12px;
       background: rgba(0, 0, 0, 0.72);
       overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
       padding: 16px;
       pointer-events: auto;
     }
@@ -448,6 +450,8 @@
       flex-direction: column;
       gap: clamp(6px, 1.2vh, 12px);
       overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
       min-height: 0;
     }
 
@@ -485,6 +489,8 @@
       min-height: 40px;
       max-height: clamp(80px, 28vh, 260px);
       overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-y;
     }
 
     .player-entry {
