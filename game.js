@@ -350,7 +350,7 @@
       this.teamSpawnIdxs = null;   // { 0: spawnIdx, 1: spawnIdx } in team mode
 
       // ── Waiting room state ─────────────────────────────────────────────
-      this.roomSettings  = { mapSize: 'medium', botCount: 0, gameMode: 'ffa', lives: 0 };
+      this.roomSettings  = { mapSize: 'medium', botCount: 0, gameMode: 'ffa', lives: 0, teamAssignments: {} };
       this.waitingPeerIds = [];   // peer IDs of non-host players in waiting room
       this.hostId        = null;  // PeerJS ID of the host
       this.matchEnded    = false;
@@ -703,6 +703,19 @@
         });
       });
 
+      document.getElementById('wr-players').addEventListener('click', e => {
+        const btn = e.target.closest('[data-team-player-id]');
+        if (!btn || !this.isHost || !this._isTeamMode()) return;
+        const playerId = btn.dataset.teamPlayerId;
+        const currentTeam = Number(btn.dataset.team);
+        if (!Number.isFinite(currentTeam)) return;
+        this._syncWaitingTeamAssignments();
+        if (!Object.prototype.hasOwnProperty.call(this.roomSettings.teamAssignments, playerId)) return;
+        this.roomSettings.teamAssignments[playerId] = currentTeam === 1 ? 0 : 1;
+        this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
+        this._updateWaitingRoomUI();
+      });
+
       // Waiting room: map size selection (host only)
       document.querySelectorAll('.size-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -719,6 +732,7 @@
         const humans = 1 + this.waitingPeerIds.length;
         if (this.roomSettings.botCount > 0) {
           this.roomSettings.botCount--;
+          this._syncWaitingTeamAssignments();
           this._updateWaitingSettings();
           this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
           this._updateWaitingRoomUI();
@@ -731,6 +745,7 @@
         const maxBots = MAX_PLAYERS - humans;
         if (this.roomSettings.botCount < maxBots) {
           this.roomSettings.botCount++;
+          this._syncWaitingTeamAssignments();
           this._updateWaitingSettings();
           this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
           this._updateWaitingRoomUI();
@@ -761,6 +776,7 @@
         btn.addEventListener('click', () => {
           if (!this.isHost) return;
           this.roomSettings.gameMode = this._normalizeGameMode(btn.dataset.mode);
+          this._syncWaitingTeamAssignments();
           this._updateWaitingSettings();
           this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
           this._updateWaitingRoomUI();
@@ -783,9 +799,12 @@
         }
 
         // Assign teams (team mode only)
+        this._syncWaitingTeamAssignments();
         const teamAssignments = {};
         if (this._isTeamMode()) {
-          allPlayerIds.forEach((pid, idx) => { teamAssignments[pid] = idx % 2; });
+          allPlayerIds.forEach((pid, idx) => {
+            teamAssignments[pid] = this._getWaitingTeamAssignment(pid, idx);
+          });
         }
 
         // Assign random spawn indices: FFA → each player a different random point;
@@ -898,7 +917,9 @@
         if (!this.running) {
           this.waitingPeerIds = this.waitingPeerIds.filter(id => id !== pid);
           if (this.isHost) {
+            this._syncWaitingTeamAssignments();
             this._broadcast({ type: 'playerListUpdate', peerIds: [...this.waitingPeerIds] });
+            this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
           }
           this._updateWaitingRoomUI();
         } else if (this.isHost) {
@@ -939,6 +960,43 @@
         deaths: p.deaths || 0,
         livesLeft: p.livesLeft ?? 0,
       };
+    }
+
+    _sanitizeTeamAssignments(assignments) {
+      const normalized = {};
+      for (const [id, team] of Object.entries(assignments || {})) {
+        const teamNum = Number(team);
+        if (teamNum === 0 || teamNum === 1) normalized[id] = teamNum;
+      }
+      return normalized;
+    }
+
+    _getWaitingParticipantIds() {
+      const ids = [];
+      const hostId = this.hostId || this.myId;
+      if (hostId) ids.push(hostId);
+      ids.push(...this.waitingPeerIds);
+      for (let i = 0; i < (this.roomSettings.botCount || 0); i++) ids.push('bot-' + i);
+      return ids;
+    }
+
+    _syncWaitingTeamAssignments() {
+      const ids = this._getWaitingParticipantIds();
+      const current = this._sanitizeTeamAssignments(this.roomSettings.teamAssignments);
+      const next = {};
+      const counts = [0, 0];
+      for (const id of ids) {
+        const team = current[id] ?? (counts[0] <= counts[1] ? 0 : 1);
+        next[id] = team;
+        counts[team] = (counts[team] || 0) + 1;
+      }
+      this.roomSettings.teamAssignments = next;
+      return next;
+    }
+
+    _getWaitingTeamAssignment(playerId, fallbackIndex = 0) {
+      const assignments = this._sanitizeTeamAssignments(this.roomSettings.teamAssignments);
+      return assignments[playerId] ?? (fallbackIndex % 2);
     }
 
     _broadcastPlayerState(id, exceptId) {
@@ -1248,7 +1306,6 @@
       let bestProj = ray.dist + P_RAD;
       for (const [id, p] of this.players) {
         if (id === shooter.id || p.dead) continue;
-        if (shooter.isBot && p.isBot) continue;
         if (this._isFriendlyFire(shooter, p)) continue;
         const dx = p.x - shooter.x, dy = p.y - shooter.y;
         const cos = Math.cos(shooter.angle), sin = Math.sin(shooter.angle);
@@ -1421,6 +1478,7 @@
                   this.roomSettings.botCount = Math.max(0, maxBots);
                 }
               }
+              this._syncWaitingTeamAssignments();
               this._sendTo(fromId, {
                 type: 'waitingAck',
                 hostId: this.myId,
@@ -1428,6 +1486,7 @@
                 peerIds: [...this.waitingPeerIds],
               });
               this._broadcast({ type: 'playerListUpdate', peerIds: [...this.waitingPeerIds] }, fromId);
+              this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
               this._updateWaitingSettings();
               this._updateWaitingRoomUI();
             }
@@ -1444,6 +1503,7 @@
               ...this.roomSettings,
               ...incoming,
               gameMode: this._normalizeGameMode(incoming.gameMode),
+              teamAssignments: this._sanitizeTeamAssignments(incoming.teamAssignments),
             };
           }
           this._showWaitingRoom(false);
@@ -1472,6 +1532,7 @@
               ...this.roomSettings,
               ...incoming,
               gameMode: this._normalizeGameMode(incoming.gameMode),
+              teamAssignments: this._sanitizeTeamAssignments(incoming.teamAssignments),
             };
           }
           this._updateWaitingSettings();
@@ -1613,6 +1674,8 @@
       document.getElementById('btn-start-game').style.display   = isHost ? 'block' : 'none';
       document.getElementById('wr-waiting-msg').style.display   = isHost ? 'none' : 'block';
 
+      if (isHost) this._syncWaitingTeamAssignments();
+
       // Disable controls for non-host clients (read-only view)
       const hostOnly = ['wr-bot-dec', 'wr-bot-inc', 'wr-lives-dec', 'wr-lives-inc'];
       document.querySelectorAll('.size-btn, .mode-btn').forEach(b => { b.disabled = !isHost; });
@@ -1630,40 +1693,52 @@
       const hostShort = hostId.slice(0, 8).toUpperCase();
       const hostIsMe  = hostId === this.myId;
       const isTeam    = this._isTeamMode();
+      const assignments = this._sanitizeTeamAssignments(this.roomSettings.teamAssignments);
 
-      const teamAColor = '#' + C.TEAM_A.toString(16).padStart(6, '0');
-      const teamBColor = '#' + C.TEAM_B.toString(16).padStart(6, '0');
-      const teamLabel = (idx) => isTeam
-        ? (idx % 2 === 0
-          ? ` <span style="color:${teamAColor}">[A隊]</span>`
-          : ` <span style="color:${teamBColor}">[B隊]</span>`)
-        : '';
+      const teamControl = (playerId, fallbackIndex) => {
+        if (!isTeam) return '';
+        const team = assignments[playerId] ?? (fallbackIndex % 2);
+        if (this.isHost) {
+          return `<button class="wr-team-btn" type="button" data-team-player-id="${playerId}" data-team="${team}" title="點擊切換隊伍">${this._teamName(team)}</button>`;
+        }
+        return `<span class="wr-team-btn" data-team="${team}" aria-hidden="true">${this._teamName(team)}</span>`;
+      };
+
+      const renderEntry = (label, playerId, fallbackIndex, classes = '', extraStyle = '') =>
+        `<div class="player-entry${classes ? ' ' + classes : ''}"${extraStyle ? ` style="${extraStyle}"` : ''}>` +
+          `<span class="player-entry-label">${label}</span>${teamControl(playerId, fallbackIndex)}` +
+        `</div>`;
 
       const entries = [
-        `<div class="player-entry is-host${hostIsMe ? ' is-self' : ''}">` +
-        `🎮 ${hostShort}${hostIsMe ? '（你·房主）' : '（房主）'}${teamLabel(0)}</div>`,
+        renderEntry(`🎮 ${hostShort}${hostIsMe ? '（你·房主）' : '（房主）'}`, hostId, 0, `is-host${hostIsMe ? ' is-self' : ''}`),
       ];
 
       for (let i = 0; i < this.waitingPeerIds.length; i++) {
         const pid   = this.waitingPeerIds[i];
         const short = pid.slice(0, 8).toUpperCase();
         const isMe  = pid === this.myId;
-        entries.push(
-          `<div class="player-entry${isMe ? ' is-self' : ''}">` +
-          `👤 ${short}${isMe ? '（你）' : ''}${teamLabel(i + 1)}</div>`
-        );
+        entries.push(renderEntry(`👤 ${short}${isMe ? '（你）' : ''}`, pid, i + 1, isMe ? 'is-self' : ''));
       }
 
       // Show pending bot slots
       const numHumans = 1 + this.waitingPeerIds.length;
       for (let i = 0; i < (this.roomSettings.botCount || 0); i++) {
-        entries.push(
-          `<div class="player-entry" style="color:#ff9922;border-color:rgba(255,153,34,0.2)">` +
-          `🤖 Bot ${i + 1}${teamLabel(numHumans + i)}</div>`
-        );
+        entries.push(renderEntry(
+          `🤖 Bot ${i + 1}`,
+          'bot-' + i,
+          numHumans + i,
+          '',
+          'color:#ff9922;border-color:rgba(255,153,34,0.2)'
+        ));
       }
 
       el.innerHTML = entries.join('');
+      const teamHint = document.getElementById('wr-team-hint');
+      if (teamHint) {
+        teamHint.textContent = isTeam
+          ? (this.isHost ? '點擊隊伍按鈕可切換 A / B 隊' : '隊伍由房主在等待室設定')
+          : '';
+      }
 
       // Update start button label with total count (host only)
       const startBtn = document.getElementById('btn-start-game');
@@ -2043,7 +2118,7 @@
         // ── 1. Find nearest living enemy player ──────────────────────────
         let nearestDist = Infinity, nearestTarget = null;
         for (const [pid, p] of this.players) {
-          if (p.isBot || p.dead) continue;
+          if (pid === id || p.dead) continue;
           // In team mode, bots only target enemies (different team)
           if (this._isTeamMode() && p.team === bot.team) continue;
           const d2 = dist2(bot.x, bot.y, p.x, p.y);

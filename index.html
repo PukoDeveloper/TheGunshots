@@ -494,6 +494,10 @@
     }
 
     .player-entry {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
       background: rgba(255,255,255,0.04);
       border: 1px solid rgba(255,255,255,0.08);
       border-radius: 6px;
@@ -502,8 +506,48 @@
       color: #ccc;
       letter-spacing: 1px;
     }
+    .player-entry-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .player-entry.is-host { border-color: rgba(255,170,68,0.35); color: #ffaa44; }
     .player-entry.is-self { border-color: rgba(68,255,136,0.35); color: #44ff88; }
+    .wr-team-btn {
+      border: 1px solid #335588;
+      border-radius: 999px;
+      background: rgba(34,51,102,0.55);
+      color: #d8ebff;
+      padding: 4px 10px;
+      font: inherit;
+      font-size: 0.78rem;
+      font-weight: 900;
+      letter-spacing: 1px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .wr-team-btn[data-team="0"] {
+      border-color: #44aaff;
+      color: #aaddff;
+      background: rgba(30,80,180,0.22);
+    }
+    .wr-team-btn[data-team="1"] {
+      border-color: #ff6655;
+      color: #ffb0aa;
+      background: rgba(180,40,40,0.22);
+    }
+    .wr-team-btn:disabled {
+      opacity: 0.8;
+      cursor: default;
+    }
+    #wr-team-hint {
+      min-height: 18px;
+      font-size: 0.75rem;
+      color: #6d86a8;
+      text-align: center;
+      letter-spacing: 1px;
+    }
 
     #wr-settings-card { display: none; }
 
@@ -668,6 +712,7 @@
       <div class="lobby-card">
         <h2>玩家列表</h2>
         <div id="wr-players"></div>
+        <p id="wr-team-hint"></p>
       </div>
     </div>
 
