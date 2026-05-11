@@ -1251,6 +1251,7 @@
 
     _scheduleRespawn(id) {
       if (!this.isHost) return;
+      this._clearRespawnTimer(id);
       if (this._isTeamSurvivalMode()) return;
       const p = this.players.get(id);
       if (!p) return;
@@ -1259,7 +1260,6 @@
         this._broadcastPlayerState(id);
         return;
       }
-      this._clearRespawnTimer(id);
       p.respawnAt = Date.now() + RESPAWN_MS;
       this._broadcastPlayerState(id);
       const timer = setTimeout(() => {
