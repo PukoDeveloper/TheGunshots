@@ -76,6 +76,7 @@
   const MAX_PLAYERS   = 8;         // max total players (humans + bots) per room
   const FFA_KILL_LIMIT = 12;
   const TEAM_KILL_LIMIT = 24;
+  const MAX_MATCH_MINUTES = 30;
 
   const C = {
     FLOOR:    0x252525,
@@ -350,11 +351,12 @@
       this.teamSpawnIdxs = null;   // { 0: spawnIdx, 1: spawnIdx } in team mode
 
       // ── Waiting room state ─────────────────────────────────────────────
-      this.roomSettings  = { mapSize: 'medium', botCount: 0, gameMode: 'ffa', lives: 0, teamAssignments: {} };
+      this.roomSettings  = { mapSize: 'medium', botCount: 0, gameMode: 'ffa', lives: 0, timeLimitMin: 0, teamAssignments: {} };
       this.waitingPeerIds = [];   // peer IDs of non-host players in waiting room
       this.hostId        = null;  // PeerJS ID of the host
       this.matchEnded    = false;
       this.matchStats    = { ffaKills: {}, teamKills: { 0: 0, 1: 0 } };
+      this.matchEndsAt   = 0;
 
       // ── Input ──────────────────────────────────────────────────────────
       this.keys = {};
@@ -771,6 +773,27 @@
         }
       });
 
+      // Waiting room: match time limit (host only, 0 = unlimited)
+      document.getElementById('wr-time-dec').addEventListener('click', () => {
+        if (!this.isHost) return;
+        const current = this._sanitizeTimeLimitMin(this.roomSettings.timeLimitMin);
+        if (current > 0) {
+          this.roomSettings.timeLimitMin = current - 1;
+          this._updateWaitingSettings();
+          this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
+        }
+      });
+
+      document.getElementById('wr-time-inc').addEventListener('click', () => {
+        if (!this.isHost) return;
+        const current = this._sanitizeTimeLimitMin(this.roomSettings.timeLimitMin);
+        if (current < MAX_MATCH_MINUTES) {
+          this.roomSettings.timeLimitMin = current + 1;
+          this._updateWaitingSettings();
+          this._broadcast({ type: 'settingsUpdate', settings: this.roomSettings });
+        }
+      });
+
       // Waiting room: game mode (host only)
       document.querySelectorAll('.mode-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -855,6 +878,8 @@
           p.team = this._isTeamMode() ? (teamAssignments[pid] ?? 0) : 0;
         }
 
+        this._syncMatchTimerFromSettings();
+
         // Send welcome to each peer (includes bots, team assignments, and spawn info)
         for (const [pid] of this.conns) {
           this._sendTo(pid, {
@@ -864,6 +889,8 @@
             mapSize: this.roomSettings.mapSize,
             gameMode: this.roomSettings.gameMode,
             lives: this.roomSettings.lives || 0,
+            timeLimitMin: this._sanitizeTimeLimitMin(this.roomSettings.timeLimitMin),
+            matchEndsAt: this.matchEndsAt || 0,
             teams: teamAssignments,
             teamSpawnIdxs: this.teamSpawnIdxs,
             players: [...this.players.entries()].map(([id, p]) => this._serializePlayer(id, p)),
@@ -1036,6 +1063,11 @@
       return 'ffa';
     }
 
+    _sanitizeTimeLimitMin(value) {
+      if (!Number.isFinite(value)) return 0;
+      return clamp(Math.trunc(value), 0, MAX_MATCH_MINUTES);
+    }
+
     _isTeamSurvivalMode() {
       return this.roomSettings.gameMode === 'team_survival';
     }
@@ -1054,6 +1086,41 @@
       this.matchEnded = false;
       this.matchStats = { ffaKills: {}, teamKills: { 0: 0, 1: 0 } };
       if (this.domMatchEnd) this.domMatchEnd.classList.remove('show');
+    }
+
+    _syncMatchTimerFromSettings() {
+      const mins = this._sanitizeTimeLimitMin(this.roomSettings.timeLimitMin);
+      this.roomSettings.timeLimitMin = mins;
+      this.matchEndsAt = mins > 0 ? Date.now() + mins * 60 * 1000 : 0;
+    }
+
+    _buildTimeUpResult() {
+      if (this._isTeamMode()) {
+        const a = this.matchStats.teamKills[0] || 0;
+        const b = this.matchStats.teamKills[1] || 0;
+        if (a === b) {
+          return { title: '⏰ 時間到', desc: `雙方同分（A隊 ${a} : ${b} B隊），平手` };
+        }
+        const winner = a > b ? 0 : 1;
+        return {
+          title: '⏰ 時間到',
+          desc: `${this._teamName(winner)} 以 ${Math.max(a, b)} : ${Math.min(a, b)} 領先獲勝`,
+        };
+      }
+
+      const entries = [...this.players.values()]
+        .map(p => ({ id: p.id, kills: p.kills || 0 }))
+        .sort((x, y) => y.kills - x.kills);
+      const top = entries[0];
+      const tied = top ? entries.filter(e => e.kills === top.kills) : [];
+      if (!top || tied.length > 1) return { title: '⏰ 時間到', desc: '最高擊殺同分，平手' };
+      return { title: '⏰ 時間到', desc: `${top.id.slice(0, 8).toUpperCase()} 以 ${top.kills} 擊殺獲勝` };
+    }
+
+    _checkMatchTimer() {
+      if (!this.isHost || this.matchEnded || !this.running) return;
+      if (!this.matchEndsAt) return;
+      if (Date.now() >= this.matchEndsAt) this._endMatch(this._buildTimeUpResult());
     }
 
     _recordKill(attackerId, targetId) {
@@ -1455,6 +1522,8 @@
                 mapSize: this.roomSettings.mapSize,
                 gameMode: this.roomSettings.gameMode,
                 lives: this.roomSettings.lives || 0,
+                timeLimitMin: this._sanitizeTimeLimitMin(this.roomSettings.timeLimitMin),
+                matchEndsAt: this.matchEndsAt || 0,
                 teams: Object.fromEntries([...this.players.entries()].map(([id, p]) => [id, p.team ?? 0])),
                 teamSpawnIdxs: this.teamSpawnIdxs,
                 players: [...this.players.entries()].map(([id, p]) => this._serializePlayer(id, p)),
@@ -1501,6 +1570,7 @@
               ...this.roomSettings,
               ...incoming,
               gameMode: this._normalizeGameMode(incoming.gameMode),
+              timeLimitMin: this._sanitizeTimeLimitMin(incoming.timeLimitMin),
               teamAssignments: this._sanitizeTeamAssignments(incoming.teamAssignments),
             };
           }
@@ -1530,6 +1600,7 @@
               ...this.roomSettings,
               ...incoming,
               gameMode: this._normalizeGameMode(incoming.gameMode),
+              timeLimitMin: this._sanitizeTimeLimitMin(incoming.timeLimitMin),
               teamAssignments: this._sanitizeTeamAssignments(incoming.teamAssignments),
             };
           }
@@ -1545,6 +1616,8 @@
           }
           if (msg.gameMode) this.roomSettings.gameMode = this._normalizeGameMode(msg.gameMode);
           if (Number.isFinite(msg.lives)) this.roomSettings.lives = msg.lives;
+          this.roomSettings.timeLimitMin = this._sanitizeTimeLimitMin(msg.timeLimitMin);
+          this.matchEndsAt = Number.isFinite(msg.matchEndsAt) ? msg.matchEndsAt : 0;
           this.teamSpawnIdxs = msg.teamSpawnIdxs || null;
           this.map = generateMap(msg.seed);
           const sp = this.map.spawns[msg.spawnIdx % this.map.spawns.length];
@@ -1675,7 +1748,7 @@
       if (isHost) this._syncWaitingTeamAssignments();
 
       // Disable controls for non-host clients (read-only view)
-      const hostOnly = ['wr-bot-dec', 'wr-bot-inc', 'wr-lives-dec', 'wr-lives-inc'];
+      const hostOnly = ['wr-bot-dec', 'wr-bot-inc', 'wr-lives-dec', 'wr-lives-inc', 'wr-time-dec', 'wr-time-inc'];
       document.querySelectorAll('.size-btn, .mode-btn').forEach(b => { b.disabled = !isHost; });
       hostOnly.forEach(id => { const el = document.getElementById(id); if (el) el.disabled = !isHost; });
 
@@ -1774,6 +1847,16 @@
       const livesIncBtn = document.getElementById('wr-lives-inc');
       if (livesDecBtn) livesDecBtn.disabled = !this.isHost || lives <= 0;
       if (livesIncBtn) livesIncBtn.disabled = !this.isHost || lives >= 10;
+
+      // Update time limit display
+      const timeLimitMin = this._sanitizeTimeLimitMin(this.roomSettings.timeLimitMin);
+      this.roomSettings.timeLimitMin = timeLimitMin;
+      const timeDisplay = document.getElementById('wr-time-display');
+      if (timeDisplay) timeDisplay.textContent = timeLimitMin === 0 ? '∞' : `${timeLimitMin} 分`;
+      const timeDecBtn = document.getElementById('wr-time-dec');
+      const timeIncBtn = document.getElementById('wr-time-inc');
+      if (timeDecBtn) timeDecBtn.disabled = !this.isHost || timeLimitMin <= 0;
+      if (timeIncBtn) timeIncBtn.disabled = !this.isHost || timeLimitMin >= MAX_MATCH_MINUTES;
     }
 
     // ══════════════════════════════════════════════════════════════════════
@@ -1825,6 +1908,8 @@
     // ══════════════════════════════════════════════════════════════════════
 
     _tick(dt) {
+      if (!this.running) return;
+      if (this.isHost) this._checkMatchTimer();
       if (!this.running) return;
 
       const me = this.players.get(this.myId);
@@ -2540,12 +2625,15 @@
         }
       }
       if (this.domMode) {
+        const remaining = this.matchEndsAt > 0
+          ? `｜剩餘 ${Math.max(0, Math.ceil((this.matchEndsAt - now) / 1000))} 秒`
+          : '｜不限時';
         if (this.roomSettings.gameMode === 'team_deathmatch') {
-          this.domMode.textContent = `模式：${this._modeLabel()}（${TEAM_KILL_LIMIT} 擊殺）`;
+          this.domMode.textContent = `模式：${this._modeLabel()}（${TEAM_KILL_LIMIT} 擊殺）${remaining}`;
         } else if (this.roomSettings.gameMode === 'team_survival') {
-          this.domMode.textContent = `模式：${this._modeLabel()}（殲滅敵隊）`;
+          this.domMode.textContent = `模式：${this._modeLabel()}（殲滅敵隊）${remaining}`;
         } else {
-          this.domMode.textContent = `模式：${this._modeLabel()}（${FFA_KILL_LIMIT} 擊殺）`;
+          this.domMode.textContent = `模式：${this._modeLabel()}（${FFA_KILL_LIMIT} 擊殺）${remaining}`;
         }
       }
 
