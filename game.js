@@ -1435,9 +1435,7 @@
       const dx = door.x * TS + TS / 2 - p.x;
       const dy = door.y * TS + TS / 2 - p.y;
       if (dx * dx + dy * dy > DOOR_D * DOOR_D) return;
-      door.open = !door.open;
-      this._redrawMap();
-      this._broadcast({ type: 'door', x: door.x, y: door.y, open: door.open });
+      this._setDoorOpenState(door, !door.open);
     }
 
     _onMsg(fromId, msg) {
@@ -1939,6 +1937,86 @@
       return false;
     }
 
+    _playerOverlapsDoor(p, door) {
+      const left = door.x * TS, top = door.y * TS;
+      const nearX = clamp(p.x, left, left + TS);
+      const nearY = clamp(p.y, top, top + TS);
+      return dist2(p.x, p.y, nearX, nearY) < P_RAD * P_RAD;
+    }
+
+    _doorEjectTiles(door) {
+      const x = door.x, y = door.y;
+      const north = y > 0 ? this.map.tiles[y - 1][x] : T.WALL;
+      const south = y < MH - 1 ? this.map.tiles[y + 1][x] : T.WALL;
+      const east  = x < MW - 1 ? this.map.tiles[y][x + 1] : T.WALL;
+      const west  = x > 0 ? this.map.tiles[y][x - 1] : T.WALL;
+      let dirs;
+      if (north === T.WALL && south === T.WALL) {
+        dirs = [{ x: -1, y: 0 }, { x: 1, y: 0 }, { x: 0, y: -1 }, { x: 0, y: 1 }];
+      } else if (east === T.WALL && west === T.WALL) {
+        dirs = [{ x: 0, y: -1 }, { x: 0, y: 1 }, { x: -1, y: 0 }, { x: 1, y: 0 }];
+      } else {
+        dirs = [{ x: -1, y: 0 }, { x: 1, y: 0 }, { x: 0, y: -1 }, { x: 0, y: 1 }];
+      }
+      return dirs
+        .map(d => ({ x: x + d.x, y: y + d.y }))
+        .filter(t => t.x >= 0 && t.x < MW && t.y >= 0 && t.y < MH);
+    }
+
+    _ejectPlayersFromDoor(door) {
+      const moved = [];
+      const candidates = this._doorEjectTiles(door).map(t => ({
+        x: (t.x + 0.5) * TS,
+        y: (t.y + 0.5) * TS,
+      }));
+      for (const [id, p] of this.players) {
+        if (p.dead || !this._playerOverlapsDoor(p, door)) continue;
+        const ranked = candidates
+          .map(c => ({ ...c, dist: dist2(p.x, p.y, c.x, c.y) }))
+          .sort((a, b) => a.dist - b.dist);
+        for (const c of ranked) {
+          if (this._solid(c.x, c.y)) continue;
+          p.x = c.x;
+          p.y = c.y;
+          moved.push(id);
+          break;
+        }
+      }
+      return moved;
+    }
+
+    _setDoorOpenState(door, open) {
+      if (!door || door.open === open) return false;
+      door.open = open;
+      const moved = open ? [] : this._ejectPlayersFromDoor(door);
+      this._redrawMap();
+      this._broadcast({ type: 'door', x: door.x, y: door.y, open: door.open });
+      for (const id of moved) this._broadcastPlayerState(id);
+      return true;
+    }
+
+    _findClosedDoorAhead(p, angle) {
+      const dirX = Math.cos(angle), dirY = Math.sin(angle);
+      let best = null;
+      let bestDist = DOOR_D * DOOR_D;
+      for (const door of this.map.doors) {
+        if (door.open) continue;
+        const cx = door.x * TS + TS / 2;
+        const cy = door.y * TS + TS / 2;
+        const dx = cx - p.x;
+        const dy = cy - p.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= bestDist) continue;
+        const forward = dx * dirX + dy * dirY;
+        if (forward <= 0) continue;
+        const lateral = Math.abs(dx * dirY - dy * dirX);
+        if (lateral > TS * 0.45) continue;
+        best = door;
+        bestDist = d2;
+      }
+      return best;
+    }
+
     // ── Shooting ───────────────────────────────────────────────────────────
     _shoot() {
       const me = this.players.get(this.myId);
@@ -2040,9 +2118,7 @@
       }
       if (closest) {
         if (this.isHost) {
-          closest.open = !closest.open;
-          this._redrawMap();
-          this._broadcast({ type: 'door', x: closest.x, y: closest.y, open: closest.open });
+          this._setDoorOpenState(closest, !closest.open);
         } else {
           this._sendTo(this.hostId, { type: 'doorRequest', x: closest.x, y: closest.y });
         }
@@ -2122,6 +2198,7 @@
           // In team mode, bots only target enemies (different team)
           if (this._isTeamMode() && p.team === bot.team) continue;
           const d2 = dist2(bot.x, bot.y, p.x, p.y);
+          if (!isInFov(this.map, bot, p)) continue;
           if (d2 < nearestDist) { nearestDist = d2; nearestTarget = p; }
         }
 
@@ -2143,6 +2220,8 @@
           const d   = Math.hypot(tdx, tdy);
           if (d > 6) {
             bot.angle = Math.atan2(tdy, tdx);
+            const doorAhead = this._findClosedDoorAhead(bot, bot.angle);
+            if (doorAhead) this._setDoorOpenState(doorAhead, true);
             const prevX = bot.x, prevY = bot.y;
             this._movePlayer(bot, (tdx / d) * BOT_SPD * dt, (tdy / d) * BOT_SPD * dt);
             // Host-side footstep sound arc
